@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Activate Your Account</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 420px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
+  h1 { font-size: 1.3rem; }
+  p.sub { color: #666; font-size: 0.9rem; }
+  input { width: 100%; padding: 10px; margin-top: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95rem; }
+  button { margin-top: 16px; padding: 10px 18px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; font-size: 0.95rem; width: 100%; }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #93b4f0; cursor: not-allowed; }
+  #result { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 0.9rem; display: none; }
+  #result.success { background: #ecfdf5; color: #065f46; display: block; }
+  #result.error { background: #fef2f2; color: #991b1b; display: block; }
+  .hint { font-size: 0.8rem; color: #888; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>Activate Your Account</h1>
+<p class="sub">Set a password to finish creating your login. This is the only step that makes your account usable.</p>
+
+<form id="activate-form">
+  <input id="password" type="password" placeholder="New password" required minlength="8" />
+  <input id="confirm-password" type="password" placeholder="Confirm password" required minlength="8" />
+  <div class="hint">Minimum 8 characters.</div>
+  <button type="submit" id="submit-btn">Activate Account</button>
+</form>
+
+<div id="result"></div>
+
+<script>
+const API = "http://localhost:8000";
+
+// The activation link looks like: activate.html?token=abc123...
+const params = new URLSearchParams(window.location.search);
+const token = params.get("token");
+
+const resultDiv = document.getElementById("result");
+
+if (!token) {
+  resultDiv.className = "error";
+  resultDiv.textContent = "No activation token found in the link. Please use the exact link from your email.";
+  document.getElementById("activate-form").style.display = "none";
+}
+
+document.getElementById("activate-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const password = document.getElementById("password").value;
+  const confirmPassword = document.getElementById("confirm-password").value;
+  const btn = document.getElementById("submit-btn");
+
+  if (password !== confirmPassword) {
+    resultDiv.className = "error";
+    resultDiv.textContent = "Passwords don't match.";
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Activating…";
+
+  try {
+    const res = await fetch(`${API}/activate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, password }),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      resultDiv.className = "success";
+      resultDiv.textContent = `Account activated! Status: ${data.account_status}. You can now log in.`;
+      document.getElementById("activate-form").style.display = "none";
+    } else {
+      resultDiv.className = "error";
+      resultDiv.textContent = data.detail;
+      btn.disabled = false;
+      btn.textContent = "Activate Account";
+    }
+  } catch (err) {
+    resultDiv.className = "error";
+    resultDiv.textContent = `Could not reach the server: ${err.message}`;
+    btn.disabled = false;
+    btn.textContent = "Activate Account";
+  }
+});
+</script>
+
+</body>
+</html>
