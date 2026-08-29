@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Invite a Team Member</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
+  h1 { font-size: 1.3rem; }
+  p.sub { color: #666; font-size: 0.9rem; margin-top: -6px; }
+  input { width: 100%; padding: 10px; margin-top: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95rem; }
+  .result-item { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-top: 10px; display: flex; justify-content: space-between; align-items: center; }
+  .result-item .info b { display: block; }
+  .result-item .info span { font-size: 0.85rem; color: #666; }
+  button { padding: 8px 14px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; font-size: 0.9rem; }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #93b4f0; cursor: not-allowed; }
+  #status { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 0.9rem; display: none; }
+  #status.success { background: #ecfdf5; color: #065f46; display: block; }
+  #status.error { background: #fef2f2; color: #991b1b; display: block; }
+  #status.info { background: #eff6ff; color: #1e40af; display: block; }
+</style>
+</head>
+<body>
+
+<h1>Invite a Team Member</h1>
+<p class="sub">Search for someone already in the government employee registry — you can't invite someone who isn't a recognized employee.</p>
+
+<input id="search-box" placeholder="Type a name or employee ID…" />
+
+<div id="results"></div>
+<div id="status"></div>
+
+<script>
+const API = "http://localhost:8000";
+let debounceTimer;
+
+document.getElementById("search-box").addEventListener("input", (e) => {
+  clearTimeout(debounceTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2) {
+    document.getElementById("results").innerHTML = "";
+    return;
+  }
+  debounceTimer = setTimeout(() => runSearch(q), 300);
+});
+
+async function runSearch(q) {
+  const resultsDiv = document.getElementById("results");
+  try {
+    const res = await fetch(`${API}/employees/search?q=${encodeURIComponent(q)}`);
+    const employees = await res.json();
+
+    if (employees.length === 0) {
+      resultsDiv.innerHTML = `<p style="color:#888; font-size:0.9rem; margin-top:10px;">No matching, not-yet-invited employees found in the registry.</p>`;
+      return;
+    }
+
+    resultsDiv.innerHTML = employees.map(emp => `
+      <div class="result-item">
+        <div class="info">
+          <b>${emp.full_name}</b>
+          <span>${emp.employee_id} · ${emp.rank || ""} · ${emp.departments ? emp.departments.name : ""}</span>
+        </div>
+        <button onclick="sendInvite('${emp.employee_id}', this)">Invite</button>
+      </div>
+    `).join("");
+  } catch (err) {
+    resultsDiv.innerHTML = `<p style="color:#991b1b;">Could not reach the server: ${err.message}</p>`;
+  }
+}
+
+async function sendInvite(employeeId, btnEl) {
+  btnEl.disabled = true;
+  btnEl.textContent = "Sending…";
+  const statusDiv = document.getElementById("status");
+
+  try {
+    const res = await fetch(`${API}/invite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ employee_id: employeeId }),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      statusDiv.className = "success";
+      statusDiv.textContent = data.message;
+      btnEl.closest(".result-item").remove();  // they're no longer inviteable
+    } else {
+      statusDiv.className = "error";
+      statusDiv.textContent = data.detail;
+      btnEl.disabled = false;
+      btnEl.textContent = "Invite";
+    }
+  } catch (err) {
+    statusDiv.className = "error";
+    statusDiv.textContent = `Could not reach the server: ${err.message}`;
+    btnEl.disabled = false;
+    btnEl.textContent = "Invite";
+  }
+}
+</script>
+
+</body>
+</html>
