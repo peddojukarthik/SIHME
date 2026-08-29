@@ -73,7 +73,7 @@ def get_current_user(authorization: str | None):
     # Get the user's own department, via employee_registry
     user_result = (
         supabase.table("users")
-        .select("user_id, employee_id, account_status, employee_registry(full_name, department_id)")
+        .select("user_id, employee_id, account_status, employee_registry!fk_users_employee(full_name, department_id)")
         .eq("user_id", session["user_id"])
         .execute()
     )
@@ -177,12 +177,19 @@ def invite(req: InviteRequest, authorization: str | None = Header(default=None))
 
     employee = registry_result.data[0]
 
-    # THE SCOPING FIX — can't invite someone outside your own department
-    if employee["department_id"] != current_user["department_id"]:
+    # THE PERMISSION FIX — check department_admins, not just department match.
+    # Anyone in a department could invite before; now only actual admins can.
+    admin_check = (
+        supabase.table("department_admins")
+        .select("can_invite_employees")
+        .eq("user_id", current_user["user_id"])
+        .eq("department_id", employee["department_id"])
+        .execute()
+    )
+    if not admin_check.data or not admin_check.data[0]["can_invite_employees"]:
         raise HTTPException(
             status_code=403,
-            detail=f"You can only invite employees in your own department. "
-                   f"{employee['full_name']} belongs to a different department.",
+            detail="You don't have invite permissions for this department.",
         )
 
     existing = supabase.table("users").select("user_id").eq("employee_id", req.employee_id).execute()
