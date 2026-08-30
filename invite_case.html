@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Invite to Case</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
+  input, select { width: 100%; padding: 10px; margin-top: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  label { display: block; font-size: 0.85rem; font-weight: 600; margin-top: 14px; }
+  .checklist label { font-weight: 400; display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .checklist input { width: auto; margin: 0; }
+  button { margin-top: 16px; padding: 9px 16px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; width: 100%; }
+  #status, #twofa-status { margin-top: 14px; padding: 12px; border-radius: 8px; font-size: 0.9rem; display: none; }
+  #status.success, #twofa-status.success { background: #ecfdf5; color: #065f46; display: block; }
+  #status.error, #twofa-status.error { background: #fef2f2; color: #991b1b; display: block; }
+  #invite-section { display: none; }
+</style>
+</head>
+<body>
+
+<div id="twofa-section">
+  <h2>Verify It's You</h2>
+  <input id="totp-code" placeholder="6-digit code" maxlength="6" />
+  <button onclick="verify2FA()">Verify</button>
+  <div id="twofa-status"></div>
+</div>
+
+<div id="invite-section">
+  <h2>Invite to Case</h2>
+
+  <label>Case ID</label>
+  <input id="case-id" placeholder="Paste the case's ID" />
+
+  <label>Employee ID (must already have an app account)</label>
+  <input id="employee-id" placeholder="e.g. HYD-PS4-0012" />
+
+  <label>Access Level</label>
+  <select id="permission-level">
+    <option value="read">Read only</option>
+    <option value="upload">Upload</option>
+    <option value="sign">Sign</option>
+    <option value="grant">Grant (can delegate to others)</option>
+  </select>
+
+  <label>Document Types to Grant</label>
+  <div class="checklist">
+    <label><input type="checkbox" value="fir" /> FIR</label>
+    <label><input type="checkbox" value="evidence" /> Evidence</label>
+    <label><input type="checkbox" value="forensic_report" /> Forensic Report</label>
+    <label><input type="checkbox" value="postmortem_report" /> Postmortem Report</label>
+    <label><input type="checkbox" value="witness_statement" /> Witness Statement</label>
+    <label><input type="checkbox" value="charge_sheet" /> Charge Sheet</label>
+  </div>
+
+  <button onclick="sendCaseInvite()">Grant Access</button>
+  <div id="status"></div>
+</div>
+
+<script>
+const API = "http://localhost:8000";
+const token = sessionStorage.getItem("token");
+if (!token) window.location.href = "login.html?redirect=" + encodeURIComponent(window.location.pathname.split("/").pop());
+
+async function verify2FA() {
+  const code = document.getElementById("totp-code").value;
+  const statusDiv = document.getElementById("twofa-status");
+  try {
+    const res = await fetch(`${API}/verify-2fa`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      document.getElementById("twofa-section").style.display = "none";
+      document.getElementById("invite-section").style.display = "block";
+    } else {
+      statusDiv.className = "error";
+      statusDiv.textContent = data.detail;
+    }
+  } catch (err) {
+    statusDiv.className = "error";
+    statusDiv.textContent = `Could not reach the server: ${err.message}`;
+  }
+}
+
+async function sendCaseInvite() {
+  const case_id = document.getElementById("case-id").value;
+  const employee_id = document.getElementById("employee-id").value;
+  const permission_level = document.getElementById("permission-level").value;
+  const allowed_document_types = Array.from(document.querySelectorAll(".checklist input:checked")).map(el => el.value);
+  const statusDiv = document.getElementById("status");
+
+  const res = await fetch(`${API}/case/invite`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+    body: JSON.stringify({ case_id, employee_id, permission_level, allowed_document_types }),
+  });
+  const data = await res.json();
+  statusDiv.className = res.ok ? "success" : "error";
+  statusDiv.textContent = res.ok ? data.message : data.detail;
+}
+</script>
+
+</body>
+</html>

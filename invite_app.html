@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Invite to App</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
+  input { width: 100%; padding: 10px; margin-top: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  button { margin-top: 12px; padding: 9px 16px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; }
+  .result-item { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-top: 10px; display: flex; justify-content: space-between; align-items: center; }
+  #status, #twofa-status { margin-top: 14px; padding: 12px; border-radius: 8px; font-size: 0.9rem; display: none; }
+  #status.success, #twofa-status.success { background: #ecfdf5; color: #065f46; display: block; }
+  #status.error, #twofa-status.error { background: #fef2f2; color: #991b1b; display: block; }
+  #invite-section { display: none; }
+</style>
+</head>
+<body>
+
+<div id="twofa-section">
+  <h2>Verify It's You</h2>
+  <p style="color:#666; font-size:0.9rem;">Enter your 6-digit authenticator code to continue.</p>
+  <input id="totp-code" placeholder="6-digit code" maxlength="6" />
+  <button onclick="verify2FA()">Verify</button>
+  <div id="twofa-status"></div>
+</div>
+
+<div id="invite-section">
+  <h2>Invite to App</h2>
+  <p style="color:#666; font-size:0.9rem;">Search employees in your own department who don't have an account yet.</p>
+  <input id="search-box" placeholder="Name or employee ID…" />
+  <div id="results"></div>
+  <div id="status"></div>
+</div>
+
+<script>
+const API = "http://localhost:8000";
+const token = sessionStorage.getItem("token");
+if (!token) window.location.href = "login.html?redirect=" + encodeURIComponent(window.location.pathname.split("/").pop());
+
+let debounceTimer;
+
+async function verify2FA() {
+  const code = document.getElementById("totp-code").value;
+  const statusDiv = document.getElementById("twofa-status");
+  try {
+    const res = await fetch(`${API}/verify-2fa`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      document.getElementById("twofa-section").style.display = "none";
+      document.getElementById("invite-section").style.display = "block";
+    } else {
+      statusDiv.className = "error";
+      statusDiv.textContent = data.detail;
+    }
+  } catch (err) {
+    statusDiv.className = "error";
+    statusDiv.textContent = `Could not reach the server: ${err.message}`;
+  }
+}
+
+document.getElementById("search-box").addEventListener("input", (e) => {
+  clearTimeout(debounceTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2) { document.getElementById("results").innerHTML = ""; return; }
+  debounceTimer = setTimeout(() => runSearch(q), 300);
+});
+
+async function runSearch(q) {
+  const resultsDiv = document.getElementById("results");
+  const res = await fetch(`${API}/employees/search?q=${encodeURIComponent(q)}`, {
+    headers: { "Authorization": `Bearer ${token}` },
+  });
+  const employees = await res.json();
+  if (!res.ok) { resultsDiv.innerHTML = `<p style="color:#991b1b;">${employees.detail}</p>`; return; }
+  if (employees.length === 0) { resultsDiv.innerHTML = `<p style="color:#888;">No matches.</p>`; return; }
+
+  resultsDiv.innerHTML = employees.map(emp => `
+    <div class="result-item">
+      <div><b>${emp.full_name}</b><br><span style="font-size:0.8rem;color:#666;">${emp.employee_id} · ${emp.rank || ""}</span></div>
+      <button onclick="sendInvite('${emp.employee_id}', this)">Invite</button>
+    </div>
+  `).join("");
+}
+
+async function sendInvite(employeeId, btnEl) {
+  btnEl.disabled = true;
+  const statusDiv = document.getElementById("status");
+  const res = await fetch(`${API}/invite`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+    body: JSON.stringify({ employee_id: employeeId }),
+  });
+  const data = await res.json();
+  statusDiv.className = res.ok ? "success" : "error";
+  statusDiv.textContent = res.ok ? data.message : data.detail;
+  if (res.ok) btnEl.closest(".result-item").remove();
+  else btnEl.disabled = false;
+}
+</script>
+
+</body>
+</html>

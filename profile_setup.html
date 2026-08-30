@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Complete Your Profile</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 420px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; }
+  h1 { font-size: 1.3rem; }
+  p.sub { color: #666; font-size: 0.9rem; }
+  label { display: block; font-size: 0.85rem; margin-top: 12px; font-weight: 600; }
+  input { width: 100%; padding: 9px; margin-top: 4px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  button { margin-top: 18px; padding: 10px 18px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; width: 100%; }
+  #status { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 0.9rem; display: none; }
+  #status.error { background: #fef2f2; color: #991b1b; display: block; }
+</style>
+</head>
+<body>
+
+<h1>Complete Your Profile</h1>
+<p class="sub">This is required once, before you can access the homepage. Only your personal details go here — your rank and department were already set by your department head.</p>
+
+<form id="profile-form">
+  <label>Date of Birth</label>
+  <input id="dob" type="date" required />
+  <label>Personal Address</label>
+  <input id="personal_address" required />
+  <label>Personal Phone</label>
+  <input id="personal_phone" required />
+  <label>Emergency Contact Name</label>
+  <input id="emergency_contact_name" required />
+  <label>Emergency Contact Phone</label>
+  <input id="emergency_contact_phone" required />
+  <button type="submit">Continue</button>
+</form>
+<div id="status"></div>
+
+<script>
+const API = "http://localhost:8000";
+const token = sessionStorage.getItem("token");
+if (!token) window.location.href = "login.html";
+
+document.getElementById("profile-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusDiv = document.getElementById("status");
+
+  const body = {
+    dob: document.getElementById("dob").value,
+    personal_address: document.getElementById("personal_address").value,
+    personal_phone: document.getElementById("personal_phone").value,
+    emergency_contact_name: document.getElementById("emergency_contact_name").value,
+    emergency_contact_phone: document.getElementById("emergency_contact_phone").value,
+  };
+
+  try {
+    const res = await fetch(`${API}/profile/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      window.location.href = "homepage.html";
+    } else {
+      statusDiv.className = "error";
+      statusDiv.textContent = data.detail;
+    }
+  } catch (err) {
+    statusDiv.className = "error";
+    statusDiv.textContent = `Could not reach the server: ${err.message}`;
+  }
+});
+</script>
+
+</body>
+</html>

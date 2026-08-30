@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Case Detail</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; }
+  a.back { font-size: 0.85rem; color: #2563eb; }
+  h1 { font-size: 1.3rem; margin-bottom: 2px; }
+  .case-id-box { background: #f3f4f6; padding: 8px 12px; border-radius: 6px; font-family: monospace; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+  .case-id-box button { font-size: 0.75rem; padding: 4px 8px; border: none; border-radius: 4px; background: #2563eb; color: white; cursor: pointer; }
+  section { margin-top: 24px; }
+  section h2 { font-size: 1rem; border-bottom: 1px solid #eee; padding-bottom: 6px; }
+  .member-row, .doc-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f5f5f5; font-size: 0.9rem; }
+  .tag { font-size: 0.7rem; background: #eef2ff; color: #3730a3; padding: 2px 8px; border-radius: 999px; }
+  input, select { width: 100%; padding: 9px; margin-top: 6px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  button.primary { margin-top: 10px; padding: 8px 14px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; }
+  #upload-status { margin-top: 10px; padding: 10px; border-radius: 6px; font-size: 0.85rem; display: none; }
+  #upload-status.success { background: #ecfdf5; color: #065f46; display: block; }
+  #upload-status.error { background: #fef2f2; color: #991b1b; display: block; }
+  .hint { font-size: 0.8rem; color: #888; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<a class="back" href="homepage.html">← Back to homepage</a>
+<h1 id="case-title">Case</h1>
+<div class="case-id-box">
+  <span id="case-id-text">—</span>
+  <button onclick="copyId()">Copy Case ID</button>
+</div>
+<p class="hint">To invite someone to this case, open <code>invite-case.html</code> directly and paste this Case ID — that page isn't linked from anywhere in the app on purpose.</p>
+
+<section>
+  <h2>Members</h2>
+  <div id="members-list">Loading…</div>
+</section>
+
+<section>
+  <h2>Files</h2>
+  <div id="files-list">Loading…</div>
+</section>
+
+<section id="upload-section" style="display:none;">
+  <h2>Upload a Document</h2>
+  <select id="document-type">
+    <option value="fir">FIR</option>
+    <option value="evidence">Evidence</option>
+    <option value="forensic_report">Forensic Report</option>
+    <option value="postmortem_report">Postmortem Report</option>
+    <option value="witness_statement">Witness Statement</option>
+    <option value="charge_sheet">Charge Sheet</option>
+    <option value="court_order">Court Order</option>
+    <option value="judgment">Judgment</option>
+  </select>
+  <input id="file-input" type="file" style="margin-top:8px;" />
+  <button class="primary" onclick="uploadFile()">Upload</button>
+  <div id="upload-status"></div>
+</section>
+
+<script>
+const API = "http://localhost:8000";
+const token = sessionStorage.getItem("token");
+if (!token) window.location.href = "login.html?redirect=" + encodeURIComponent(window.location.pathname.split("/").pop() + window.location.search);
+
+const params = new URLSearchParams(window.location.search);
+const caseId = params.get("case_id");
+document.getElementById("case-id-text").textContent = caseId || "no case_id in URL";
+
+function copyId() {
+  navigator.clipboard.writeText(caseId);
+  alert("Case ID copied.");
+}
+
+async function loadMembers() {
+  const res = await fetch(`${API}/case/members?case_id=${caseId}`, { headers: { "Authorization": `Bearer ${token}` } });
+  const data = await res.json();
+  const el = document.getElementById("members-list");
+  if (!res.ok) { el.innerHTML = `<p style="color:#991b1b;">${data.detail}</p>`; return; }
+
+  document.getElementById("case-title").textContent = "Case";
+  el.innerHTML = data.members.map(m => `
+    <div class="member-row">
+      <span>${m.users.employee_registry.full_name} <span class="tag">${m.users.employee_registry.departments.name}</span></span>
+      <span>${m.permission_level} · ${(m.allowed_document_types || []).join(", ") || "no types"}</span>
+    </div>
+  `).join("") || "<p style='color:#888;'>No members.</p>";
+
+  // Only show the upload widget if the viewer actually has upload rights
+  if (["upload", "sign", "grant"].includes(data.my_access.permission_level)) {
+    document.getElementById("upload-section").style.display = "block";
+  }
+}
+
+async function loadDocuments() {
+  const res = await fetch(`${API}/case/documents?case_id=${caseId}`, { headers: { "Authorization": `Bearer ${token}` } });
+  const data = await res.json();
+  const el = document.getElementById("files-list");
+  if (!res.ok) { el.innerHTML = `<p style="color:#991b1b;">${data.detail}</p>`; return; }
+
+  if (data.documents.length === 0) {
+    el.innerHTML = `<p style="color:#888;">No files visible to you yet. Your access covers: ${data.my_allowed_document_types.join(", ") || "nothing"}.</p>`;
+    return;
+  }
+  el.innerHTML = data.documents.map(d => `
+    <div class="doc-row">
+      <span>${d.document_type} <span class="tag">${d.file_type}</span></span>
+      <span style="font-family:monospace; font-size:0.75rem; color:#888;">${d.document_id.slice(0,8)}…</span>
+    </div>
+  `).join("");
+}
+
+async function uploadFile() {
+  const fileInput = document.getElementById("file-input");
+  const documentType = document.getElementById("document-type").value;
+  const statusDiv = document.getElementById("upload-status");
+  if (!fileInput.files.length) { alert("Choose a file first."); return; }
+
+  const formData = new FormData();
+  formData.append("case_id", caseId);
+  formData.append("document_type", documentType);
+  formData.append("file", fileInput.files[0]);
+
+  const res = await fetch(`${API}/documents/upload`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}` },
+    body: formData,
+  });
+  const data = await res.json();
+  statusDiv.className = res.ok ? "success" : "error";
+  statusDiv.textContent = res.ok ? "Uploaded and signed successfully." : data.detail;
+  if (res.ok) loadDocuments();
+}
+
+loadMembers();
+loadDocuments();
+</script>
+
+</body>
+</html>

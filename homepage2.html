@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Secure DMS - Documents</title>
+
+    <style>
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #f5f7fb;
+            color: #172033;
+        }
+
+        .container {
+            max-width: 850px;
+            margin: 50px auto;
+            padding: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 14px;
+            padding: 30px;
+            box-shadow:
+                0 8px 30px
+                rgba(0,0,0,0.08);
+        }
+
+        h1 {
+            margin-top: 0;
+        }
+
+        label {
+            display: block;
+            margin-top: 20px;
+            margin-bottom: 7px;
+            font-weight: 600;
+        }
+
+        input,
+        select {
+            width: 100%;
+            padding: 12px;
+            border:
+                1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 15px;
+        }
+
+        .buttons {
+            display: flex;
+            gap: 15px;
+            margin-top: 25px;
+        }
+
+        button {
+            flex: 1;
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 15px;
+        }
+
+        .upload {
+            background: #2563eb;
+            color: white;
+        }
+
+        .camera {
+            background: #111827;
+            color: white;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        #camera-area {
+            margin-top: 25px;
+        }
+
+        video {
+            width: 100%;
+            max-height: 450px;
+            background: black;
+            border-radius: 10px;
+        }
+
+        #capture {
+            margin-top: 12px;
+            background: #dc2626;
+            color: white;
+            width: 100%;
+        }
+
+        #status {
+            margin-top: 20px;
+            padding: 14px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        #status.success {
+            display: block;
+            background: #ecfdf5;
+            color: #065f46;
+        }
+
+        #status.error {
+            display: block;
+            background: #fef2f2;
+            color: #991b1b;
+        }
+
+        #result {
+            margin-top: 25px;
+            display: none;
+        }
+
+        .hash {
+            background: #111827;
+            color: #f9fafb;
+            padding: 15px;
+            border-radius: 8px;
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 13px;
+        }
+
+        .success-box {
+            margin-top: 15px;
+            padding: 15px;
+            background: #ecfdf5;
+            color: #065f46;
+            border-radius: 8px;
+        }
+
+    </style>
+
+</head>
+
+
+<body>
+
+
+<div class="container">
+
+    <div class="card">
+
+        <h1>Secure Document Upload</h1>
+
+        <p>
+            Upload or capture a document.
+            The file will be hashed and digitally signed.
+        </p>
+
+
+        <!-- CASE -->
+
+        <label for="caseId">
+            Case ID
+        </label>
+
+        <input
+            id="caseId"
+            type="text"
+            placeholder="Enter Case UUID"
+        >
+
+
+        <!-- DOCUMENT TYPE -->
+
+        <label for="documentType">
+            Document Type
+        </label>
+
+        <select id="documentType">
+
+            <option value="fir">
+                FIR
+            </option>
+
+            <option value="evidence">
+                Evidence
+            </option>
+
+            <option value="forensic_report">
+                Forensic Report
+            </option>
+
+            <option value="postmortem_report">
+                Postmortem Report
+            </option>
+
+            <option value="witness_statement">
+                Witness Statement
+            </option>
+
+            <option value="charge_sheet">
+                Charge Sheet
+            </option>
+
+            <option value="court_order">
+                Court Order
+            </option>
+
+            <option value="judgment">
+                Judgment
+            </option>
+
+        </select>
+
+
+        <!-- FILE -->
+
+        <input
+            id="fileInput"
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.ppt,.pptx,.txt"
+            hidden
+        >
+
+
+        <div class="buttons">
+
+            <button
+                class="upload"
+                id="uploadButton"
+            >
+                📁 Select File
+            </button>
+
+            <button
+                class="camera"
+                id="cameraButton"
+            >
+                📷 Camera
+            </button>
+
+        </div>
+
+
+        <!-- CAMERA -->
+
+        <div
+            id="camera-area"
+            style="display:none;"
+        >
+
+            <video
+                id="video"
+                autoplay
+                playsinline
+            ></video>
+
+            <button
+                id="capture"
+            >
+                Capture Document
+            </button>
+
+        </div>
+
+
+        <!-- STATUS -->
+
+        <div id="status"></div>
+
+
+        <!-- RESULT -->
+
+        <div id="result">
+
+            <h2>
+                Document Secured ✓
+            </h2>
+
+            <p>
+                File Hash (SHA-256)
+            </p>
+
+            <div
+                class="hash"
+                id="fileHash"
+            ></div>
+
+
+            <p>
+                Digital Signature
+            </p>
+
+            <div
+                class="hash"
+                id="signature"
+            ></div>
+
+
+            <p>
+                Version ID
+            </p>
+
+            <div
+                class="hash"
+                id="versionId"
+            ></div>
+
+
+            <div class="success-box">
+
+                ✓ Original file stored<br>
+
+                ✓ SHA-256 hash generated<br>
+
+                ✓ ECDSA-P256 signature generated<br>
+
+                ✓ Uploader recorded
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+<script>
+
+const API = "http://localhost:8000";
+
+
+// --------------------------------------------------
+// Existing login system
+// --------------------------------------------------
+//
+// Your current login page keeps sessionToken in JS.
+// We need it available after navigating to homepage.
+//
+// In your existing login function add:
+//
+// localStorage.setItem("sessionToken", data.token);
+//
+// --------------------------------------------------
+
+// --------------------------------------------------
+// Session token — matches how login.html actually stores it
+// (sessionStorage, key "token"), not localStorage/"sessionToken"
+// --------------------------------------------------
+
+const sessionToken =
+    sessionStorage.getItem(
+        "token"
+    );
+
+
+if (!sessionToken) {
+
+    document.body.innerHTML = `
+        <div style="
+            max-width:500px;
+            margin:100px auto;
+            font-family:Arial;
+            text-align:center;
+        ">
+            <h2>Session expired</h2>
+            <p>Please log in again.</p>
+            <a href="login.html">Go to login</a>
+        </div>
+    `;
+
+}
+
+
+// --------------------------------------------------
+// ELEMENTS
+// --------------------------------------------------
+
+const fileInput =
+    document.getElementById(
+        "fileInput"
+    );
+
+const uploadButton =
+    document.getElementById(
+        "uploadButton"
+    );
+
+const cameraButton =
+    document.getElementById(
+        "cameraButton"
+    );
+
+const cameraArea =
+    document.getElementById(
+        "camera-area"
+    );
+
+const video =
+    document.getElementById(
+        "video"
+    );
+
+const capture =
+    document.getElementById(
+        "capture"
+    );
+
+const status =
+    document.getElementById(
+        "status"
+    );
+
+const result =
+    document.getElementById(
+        "result"
+    );
+
+const fileHash =
+    document.getElementById(
+        "fileHash"
+    );
+
+const signature =
+    document.getElementById(
+        "signature"
+    );
+
+const versionId =
+    document.getElementById(
+        "versionId"
+    );
+
+
+let stream = null;
+
+
+// --------------------------------------------------
+// FILE BUTTON
+// --------------------------------------------------
+
+uploadButton.addEventListener(
+    "click",
+    () => {
+
+        fileInput.click();
+
+    }
+);
+
+
+// --------------------------------------------------
+// FILE SELECTED
+// --------------------------------------------------
+
+fileInput.addEventListener(
+    "change",
+    async () => {
+
+        if (
+            !fileInput.files.length
+        ) {
+            return;
+        }
+
+        const file =
+            fileInput.files[0];
+
+        await uploadDocument(
+            file,
+            file.name
+        );
+
+    }
+);
+
+
+// --------------------------------------------------
+// CAMERA
+// --------------------------------------------------
+
+cameraButton.addEventListener(
+    "click",
+    async () => {
+
+        try {
+
+            stream =
+                await navigator
+                .mediaDevices
+                .getUserMedia({
+
+                    video: {
+                        facingMode:
+                            "environment"
+                    },
+
+                    audio: false
+
+                });
+
+
+            video.srcObject =
+                stream;
+
+            cameraArea.style.display =
+                "block";
+
+        }
+
+        catch (error) {
+
+            showError(
+                "Could not access camera: " +
+                error.message
+            );
+
+        }
+
+    }
+);
+
+
+// --------------------------------------------------
+// CAPTURE
+// --------------------------------------------------
+
+capture.addEventListener(
+    "click",
+    () => {
+
+        const canvas =
+            document.createElement(
+                "canvas"
+            );
+
+
+        canvas.width =
+            video.videoWidth;
+
+        canvas.height =
+            video.videoHeight;
+
+
+        const context =
+            canvas.getContext(
+                "2d"
+            );
+
+
+        context.drawImage(
+            video,
+            0,
+            0,
+            canvas.width,
+            canvas.height
+        );
+
+
+        canvas.toBlob(
+            async (blob) => {
+
+                stopCamera();
+
+                await uploadDocument(
+                    blob,
+                    "camera_capture.jpg"
+                );
+
+            },
+
+            "image/jpeg",
+
+            0.95
+        );
+
+    }
+);
+
+
+// --------------------------------------------------
+// STOP CAMERA
+// --------------------------------------------------
+
+function stopCamera() {
+
+    if (stream) {
+
+        stream
+            .getTracks()
+            .forEach(
+                track =>
+                    track.stop()
+            );
+
+        stream = null;
+
+    }
+
+
+    video.srcObject = null;
+
+    cameraArea.style.display =
+        "none";
+
+}
+
+
+// --------------------------------------------------
+// UPLOAD DOCUMENT
+// --------------------------------------------------
+
+async function uploadDocument(
+    file,
+    filename
+) {
+
+    const caseId =
+        document.getElementById(
+            "caseId"
+        ).value.trim();
+
+
+    const documentType =
+        document.getElementById(
+            "documentType"
+        ).value;
+
+
+    if (!caseId) {
+
+        showError(
+            "Please enter a Case ID."
+        );
+
+        return;
+
+    }
+
+
+    setStatus(
+        "Uploading and securing document..."
+    );
+
+
+    result.style.display =
+        "none";
+
+
+    uploadButton.disabled =
+        true;
+
+    cameraButton.disabled =
+        true;
+
+
+    try {
+
+        const formData =
+            new FormData();
+
+
+        formData.append(
+            "case_id",
+            caseId
+        );
+
+
+        formData.append(
+            "document_type",
+            documentType
+        );
+
+
+        formData.append(
+            "file",
+            file,
+            filename
+        );
+
+
+        const response =
+            await fetch(
+                `${API}/documents/upload`,
+                {
+
+                    method:
+                        "POST",
+
+                    headers: {
+
+                        "Authorization":
+                            `Bearer ${sessionToken}`
+
+                    },
+
+                    body:
+                        formData
+
+                }
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.detail ||
+                "Upload failed."
+            );
+
+        }
+
+
+        // ------------------------------------------------
+        // Display result
+        // ------------------------------------------------
+
+        fileHash.textContent =
+            data.file_hash;
+
+
+        signature.textContent =
+            data.signature;
+
+
+        versionId.textContent =
+            data.version_id;
+
+
+        result.style.display =
+            "block";
+
+
+        setSuccess(
+            "Document uploaded, hashed and digitally signed successfully."
+        );
+
+
+    }
+
+    catch (error) {
+
+        showError(
+            error.message
+        );
+
+    }
+
+    finally {
+
+        uploadButton.disabled =
+            false;
+
+        cameraButton.disabled =
+            false;
+
+    }
+
+}
+
+
+// --------------------------------------------------
+// STATUS
+// --------------------------------------------------
+
+function setStatus(
+    message
+) {
+
+    status.className =
+        "success";
+
+    status.textContent =
+        message;
+
+}
+
+
+function setSuccess(
+    message
+) {
+
+    status.className =
+        "success";
+
+    status.textContent =
+        "✓ " + message;
+
+}
+
+
+function showError(
+    message
+) {
+
+    status.className =
+        "error";
+
+    status.textContent =
+        "✕ " + message;
+
+}
+
+</script>
+
+</body>
+
+</html>

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Homepage</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; }
+  header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 14px; margin-bottom: 20px; }
+  header .who { font-size: 0.95rem; }
+  header .who b { display: block; font-size: 1.1rem; }
+  header .who span { color: #666; }
+  .bell { position: relative; cursor: pointer; font-size: 1.3rem; }
+  .bell .count { position: absolute; top: -6px; right: -8px; background: #dc2626; color: white; font-size: 0.65rem; padding: 1px 5px; border-radius: 999px; }
+  .role-tag { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 3px 10px; border-radius: 999px; margin-bottom: 16px; }
+  .role-tag.head { background: #fef3c7; color: #92400e; }
+  .role-tag.officer { background: #dbeafe; color: #1e40af; }
+  .role-tag.other { background: #ede9fe; color: #5b21b6; }
+  .action-card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  .action-card h3 { margin: 0 0 6px 0; font-size: 1rem; }
+  .action-card p { margin: 0 0 10px 0; font-size: 0.85rem; color: #666; }
+  button, .btn { padding: 8px 14px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; font-size: 0.9rem; text-decoration: none; display: inline-block; }
+  input { width: 100%; padding: 9px; margin-top: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  .case-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #f0f0f0; font-size: 0.9rem; }
+  .case-row .perm { font-size: 0.75rem; color: #888; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="who">
+    <b id="full-name">—</b>
+    <span id="dept-name">—</span>
+  </div>
+  <div class="bell">🔔<span class="count" id="notif-count">0</span></div>
+</header>
+
+<div id="content">Loading…</div>
+
+<script>
+const API = "http://localhost:8000";
+const token = sessionStorage.getItem("token");
+if (!token) window.location.href = "login.html?redirect=" + encodeURIComponent(window.location.pathname.split("/").pop());
+
+const fullName = sessionStorage.getItem("full_name");
+const deptType = sessionStorage.getItem("department_type");
+const deptName = sessionStorage.getItem("department_name");
+const isAdmin = sessionStorage.getItem("is_admin") === "true";
+
+document.getElementById("full-name").textContent = fullName;
+document.getElementById("dept-name").textContent = deptName;
+
+async function loadMyCases() {
+  const res = await fetch(`${API}/case/my`, { headers: { "Authorization": `Bearer ${token}` } });
+  if (!res.ok) return [];
+  return await res.json();
+}
+
+function caseListHTML(cases) {
+  if (cases.length === 0) return `<p style="color:#888; font-size:0.9rem;">No cases yet.</p>`;
+  return cases.map(c => `
+    <a href="case-detail.html?case_id=${c.case_id}" style="text-decoration:none; color:inherit;">
+      <div class="case-row">
+        <span>${c.cases.fir_id} <span class="perm">(${c.cases.status})</span></span>
+        <span class="perm">${c.permission_level} →</span>
+      </div>
+    </a>
+  `).join("");
+}
+
+async function render() {
+  const cases = await loadMyCases();
+  const content = document.getElementById("content");
+
+  // ---------------- POLICE HEAD ----------------
+  if (deptType === "police" && isAdmin) {
+    content.innerHTML = `
+      <span class="role-tag head">DEPARTMENT HEAD</span>
+      <div class="action-card">
+        <h3>File a New FIR</h3>
+        <p>Fill out the FIR form — a case number is generated automatically and the form itself becomes the case's first signed document.</p>
+        <a href="file-fir.html" class="btn" style="margin-top:10px;">File a New FIR</a>
+      </div>
+      <div class="action-card">
+        <h3>My Cases (${cases.length})</h3>
+        ${caseListHTML(cases)}
+      </div>
+      <div class="action-card">
+        <h3>Case Lookup</h3>
+        <p>Search by FIR/case reference to request access to a case outside your own.</p>
+        <input id="case-lookup" placeholder="FIR reference number" />
+        <button onclick="alert('Case lookup + request-access flow — next to build')" style="margin-top:10px;">Search</button>
+      </div>
+    `;
+
+  // ---------------- ORDINARY POLICE OFFICER ----------------
+  } else if (deptType === "police" && !isAdmin) {
+    content.innerHTML = `
+      <span class="role-tag officer">POLICE OFFICER</span>
+      <div class="action-card">
+        <h3>File a New FIR</h3>
+        <p>Fill out the FIR form — a case number is generated automatically and the form itself becomes the case's first signed document.</p>
+        <a href="file-fir.html" class="btn" style="margin-top:10px;">File a New FIR</a>
+      </div>
+      <div class="action-card">
+        <h3>My Cases (${cases.length})</h3>
+        ${caseListHTML(cases)}
+      </div>
+      <div class="action-card">
+        <h3>Case Lookup</h3>
+        <p>Search by FIR/case reference to request access to a case you're not on.</p>
+        <input id="case-lookup" placeholder="FIR reference number" />
+        <button onclick="alert('Case lookup + request-access flow — next to build')" style="margin-top:10px;">Search</button>
+      </div>
+    `;
+
+  // ---------------- OTHER DEPARTMENT (FSL, hospital, court, prosecution) ----------------
+  } else {
+    content.innerHTML = `
+      <span class="role-tag other">${deptType.toUpperCase()}</span>
+      <div class="action-card">
+        <h3>Request Case Access</h3>
+        <p>Search by FIR/case reference and request access from the case's owning department.</p>
+        <input id="case-lookup" placeholder="FIR reference number" />
+        <button onclick="alert('Case lookup + request-access flow — next to build')" style="margin-top:10px;">Search</button>
+      </div>
+      <div class="action-card">
+        <h3>My Cases (${cases.length})</h3>
+        <p>Cases you've been granted access to.</p>
+        ${caseListHTML(cases)}
+      </div>
+    `;
+  }
+}
+
+render();
+</script>
+
+</body>
+</html>
