@@ -1,1004 +1,163 @@
-import os
-import mimetypes
-import uuid
-
+import os, base64, hashlib, mimetypes, secrets, uuid
 from datetime import datetime, timezone
-
-from fastapi import (
-    FastAPI,
-    UploadFile,
-    File,
-    Header,
-    HTTPException,
-    Form
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-
+from pathlib import Path
 from dotenv import load_dotenv
-
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from supabase import create_client
 
-from document_crypto import (
-    calculate_file_hash,
-    generate_user_key_pair,
-    save_private_key,
-    sign_file_hash,
-    verify_signature
-)
-
-
-# ============================================================
-# CONFIG
-# ============================================================
-
 load_dotenv()
-
-SUPABASE_URL = os.environ[
-    "SUPABASE_URL"
-]
-
-SUPABASE_SERVICE_ROLE_KEY = os.environ[
-    "SUPABASE_SERVICE_ROLE_KEY"
-]
-
-DOCUMENT_BUCKET = os.getenv(
-    "DOCUMENT_BUCKET",
-    "documents"
-)
-
-
-supabase = create_client(
-    SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE_KEY
-)
-
-
-app = FastAPI(
-    title="Secure Document Service"
-)
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
-
-# ============================================================
-# SETTINGS
-# ============================================================
-
-MAX_FILE_SIZE = 50 * 1024 * 1024
-
-
-ALLOWED_EXTENSIONS = {
-    ".pdf",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".doc",
-    ".docx",
-    ".ppt",
-    ".pptx",
-    ".txt"
-}
-
-
-ALLOWED_DOCUMENT_TYPES = {
-    "FIR",
-    "CASE_DOCUMENT",
-    "EVIDENCE",
-    "REPORT",
-    "STATEMENT",
-    "OTHER"
-}
-
-
-# ============================================================
-# AUTHENTICATION
-# ============================================================
-
-def get_current_user(
-    authorization: str | None
-):
-
-    if not authorization:
-
-        raise HTTPException(
-            status_code=401,
-            detail="Not logged in."
-        )
-
-
-    if not authorization.startswith(
-        "Bearer "
-    ):
-
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid authorization header."
-        )
-
-
-    raw_token = (
-        authorization
-        .removeprefix("Bearer ")
-        .strip()
-    )
-
-
-    if not raw_token:
-
-        raise HTTPException(
-            status_code=401,
-            detail="Missing session token."
-        )
-
-
-    # --------------------------------------------------------
-    # Same token hashing mechanism as your existing backend
-    # --------------------------------------------------------
-
-    import hashlib
-
-    token_hash = hashlib.sha256(
-        raw_token.encode()
-    ).hexdigest()
-
-
-    session_result = (
-        supabase
-        .table("sessions")
-        .select(
-            "user_id, expires_at"
-        )
-        .eq(
-            "token_hash",
-            token_hash
-        )
-        .execute()
-    )
-
-
-    if not session_result.data:
-
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid session."
-        )
-
-
-    session = session_result.data[0]
-
-
-    expires_at = datetime.fromisoformat(
-        session["expires_at"]
-    )
-
-
-    if datetime.now(
-        timezone.utc
-    ) > expires_at:
-
-        raise HTTPException(
-            status_code=401,
-            detail="Session expired."
-        )
-
-
-    user_id = session[
-        "user_id"
-    ]
-
-
-    user_result = (
-        supabase
-        .table("users")
-        .select(
-            "user_id, employee_id, account_status"
-        )
-        .eq(
-            "user_id",
-            user_id
-        )
-        .execute()
-    )
-
-
-    if not user_result.data:
-
-        raise HTTPException(
-            status_code=401,
-            detail="User not found."
-        )
-
-
-    user = user_result.data[0]
-
-
-    return user
-
-
-# ============================================================
-# USER KEY MANAGEMENT
-# ============================================================
-
-def ensure_user_key(
-    user_id: str
-):
-
-    existing = (
-        supabase
-        .table("user_keys")
-        .select(
-            "key_id, public_key, kms_key_reference, algorithm"
-        )
-        .eq(
-            "user_id",
-            user_id
-        )
-        .eq(
-            "key_status",
-            "active"
-        )
-        .limit(1)
-        .execute()
-    )
-
-
-    if existing.data:
-
-        return existing.data[0]
-
-
-    # --------------------------------------------------------
-    # Generate ECDSA P-256 pair
-    # --------------------------------------------------------
-
-    private_key, public_key = (
-        generate_user_key_pair()
-    )
-
-
-    # --------------------------------------------------------
-    # Store encrypted private key OUTSIDE database
-    # --------------------------------------------------------
-
-    save_private_key(
-        user_id,
-        private_key
-    )
-
-
-    # --------------------------------------------------------
-    # Prototype KMS reference
-    #
-    # Later replace this with:
-    # AWS KMS ARN / Azure Key Vault ID / HSM reference
-    # --------------------------------------------------------
-
-    kms_reference = (
-        f"local-encrypted-key:{user_id}"
-    )
-
-
-    result = (
-        supabase
-        .table("user_keys")
-        .insert({
-            "user_id": user_id,
-            "public_key": public_key,
-            "kms_key_reference": kms_reference,
-            "algorithm": "ECDSA-P256",
-            "key_status": "active"
-        })
-        .execute()
-    )
-
-
-    if not result.data:
-
-        raise HTTPException(
-            status_code=500,
-            detail="Could not create user key."
-        )
-
-
-    return result.data[0]
-
-
-# ============================================================
-# CASE ACCESS
-# ============================================================
-
-def check_case_upload_permission(
-    user_id: str,
-    case_id: str
-):
-
-    membership = (
-        supabase
-        .table("case_membership")
-        .select(
-            "permission_level, expires_at"
-        )
-        .eq(
-            "user_id",
-            user_id
-        )
-        .eq(
-            "case_id",
-            case_id
-        )
-        .limit(1)
-        .execute()
-    )
-
-
-    if not membership.data:
-
-        raise HTTPException(
-            status_code=403,
-            detail="You are not a member of this case."
-        )
-
-
-    membership_row = membership.data[0]
-
-
-    # --------------------------------------------------------
-    # Check expiry
-    # --------------------------------------------------------
-
-    if membership_row.get(
-        "expires_at"
-    ):
-
-        expires = datetime.fromisoformat(
-            membership_row[
-                "expires_at"
-            ]
-        )
-
-        if datetime.now(
-            timezone.utc
-        ) > expires:
-
-            raise HTTPException(
-                status_code=403,
-                detail="Your case access has expired."
-            )
-
-
-    permission = membership_row[
-        "permission_level"
-    ]
-
-
-    # Your schema defines:
-    #
-    # read
-    # upload
-    # sign
-    # grant
-    #
-    # For upload, upload/sign/grant are accepted.
-
-    if permission not in {
-        "upload",
-        "sign",
-        "grant"
-    }:
-
-        raise HTTPException(
-            status_code=403,
-            detail="You don't have upload permission for this case."
-        )
-
-
-    return True
-
-
-# ============================================================
-# FILE TYPE
-# ============================================================
-
-def determine_file_type(
-    extension: str
-):
-
-    extension = extension.lower()
-
-
-    if extension in {
-        ".jpg",
-        ".jpeg",
-        ".png"
-    }:
-
-        return "image"
-
-
-    if extension in {
-        ".pdf",
-        ".doc",
-        ".docx",
-        ".ppt",
-        ".pptx",
-        ".txt"
-    }:
-
-        return "text"
-
-
-    raise HTTPException(
-        status_code=400,
-        detail="Unsupported file type."
-    )
-
-
-# ============================================================
-# UPLOAD
-# ============================================================
-
-@app.post(
-    "/documents/upload"
-)
-async def upload_document(
-
-    case_id: str = Form(...),
-
-    document_type: str = Form(...),
-
-    file: UploadFile = File(...),
-
-    authorization: str | None = Header(
-        default=None
-    )
-):
-
-    # --------------------------------------------------------
-    # Authenticate
-    # --------------------------------------------------------
-
-    user = get_current_user(
-        authorization
-    )
-
-
-    user_id = user[
-        "user_id"
-    ]
-
-
-    # --------------------------------------------------------
-    # Validate case ID
-    # --------------------------------------------------------
-
+SUPABASE_URL=os.environ['SUPABASE_URL']; SUPABASE_SERVICE_ROLE_KEY=os.environ['SUPABASE_SERVICE_ROLE_KEY']
+DOCUMENT_BUCKET=os.getenv('DOCUMENT_BUCKET','documents'); PRIVATE_KEY_DIR=Path(os.getenv('PRIVATE_KEY_DIR','./private_keys'))
+MAX_FILE_SIZE=50*1024*1024; SIGNED_URL_SECONDS=300
+PRIVATE_KEY_DIR.mkdir(parents=True,exist_ok=True)
+KEY_ENCRYPTION_KEY=os.getenv('KEY_ENCRYPTION_KEY')
+if not KEY_ENCRYPTION_KEY: raise RuntimeError('KEY_ENCRYPTION_KEY missing. Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"')
+fernet=Fernet(KEY_ENCRYPTION_KEY.encode())
+supabase=create_client(SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY)
+app=FastAPI(title='SIH Secure Document Backend')
+app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=False,allow_methods=['*'],allow_headers=['*'])
+ALLOWED_EXTENSIONS={'.pdf','.png','.jpg','.jpeg','.doc','.docx','.ppt','.pptx','.txt'}
+ALLOWED_DOCUMENT_TYPES={'fir','evidence','forensic_report','postmortem_report','witness_statement','charge_sheet','court_order','judgment'}
+UPLOAD_PERMISSIONS={'upload','sign','grant'}
+
+def parse_ts(v): return datetime.fromisoformat(v.replace('Z','+00:00'))
+def sha256(b): return hashlib.sha256(b).hexdigest()
+def private_path(uid): return PRIVATE_KEY_DIR/f'{uid}.key'
+def filename_of(name):
+    name=os.path.basename(name or '').strip().replace('/','_').replace('\\','_')
+    if not name or name in {'.','..'}: raise HTTPException(400,'Invalid filename.')
+    return ''.join(c for c in name if c.isprintable())
+def file_type(ext):
+    if ext in {'.png','.jpg','.jpeg'}: return 'image'
+    if ext in {'.pdf','.doc','.docx','.ppt','.pptx','.txt'}: return 'text'
+    raise HTTPException(400,'Unsupported file type.')
+
+def current_user(auth):
+    if not auth or not auth.startswith('Bearer '): raise HTTPException(401,'Not logged in. Include your session token.')
+    raw=auth.removeprefix('Bearer ').strip()
+    if not raw: raise HTTPException(401,'Missing session token.')
+    th=hashlib.sha256(raw.encode()).hexdigest()
+    s=supabase.table('sessions').select('session_id,user_id,expires_at').eq('token_hash',th).limit(1).execute()
+    if not s.data: raise HTTPException(401,'Invalid session. Please log in again.')
+    if datetime.now(timezone.utc)>parse_ts(s.data[0]['expires_at']): raise HTTPException(401,'Session expired. Please log in again.')
+    u=supabase.table('users').select('user_id,employee_id,account_status,employee_registry!fk_users_employee(full_name,department_id,departments(type,name))').eq('user_id',s.data[0]['user_id']).limit(1).execute()
+    if not u.data: raise HTTPException(401,'User not found.')
+    x=u.data[0]; r=x.get('employee_registry') or {}; d=r.get('departments') or {}
+    return {'user_id':x['user_id'],'employee_id':x.get('employee_id'),'full_name':r.get('full_name'),'department_id':r.get('department_id'),'department_type':d.get('type'),'department_name':d.get('name')}
+
+def membership(uid,cid):
+    r=supabase.table('case_membership').select('permission_level,expires_at,allowed_document_types').eq('user_id',uid).eq('case_id',cid).limit(1).execute()
+    if not r.data: raise HTTPException(403,'You are not a member of this case.')
+    x=r.data[0]
+    if x.get('expires_at') and datetime.now(timezone.utc)>parse_ts(x['expires_at']): raise HTTPException(403,'Your case access has expired.')
+    return x
+
+def check_upload(uid,cid,dt):
+    m=membership(uid,cid)
+    if m['permission_level'] not in UPLOAD_PERMISSIONS: raise HTTPException(403,"You don't have upload permission for this case.")
+    allowed=set(m.get('allowed_document_types') or [])
+    if dt not in allowed: raise HTTPException(403,f"You are not authorized to upload '{dt}'. Your access covers: {sorted(allowed) or 'nothing'}.")
+    return m
+
+def ensure_key(uid):
+    r=supabase.table('user_keys').select('key_id,public_key,kms_key_reference,algorithm,key_status').eq('user_id',uid).eq('key_status','active').limit(1).execute()
+    if r.data:
+        if not private_path(uid).exists(): raise HTTPException(500,"Active public key exists but encrypted private key is missing.")
+        return r.data[0]
+    private=ec.generate_private_key(ec.SECP256R1()); public=private.public_key()
+    priv=private.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()).decode()
+    pub=public.public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    private_path(uid).write_bytes(fernet.encrypt(priv.encode()))
+    try: os.chmod(private_path(uid),0o600)
+    except OSError: pass
+    r=supabase.table('user_keys').insert({'user_id':uid,'public_key':pub,'kms_key_reference':f'local-encrypted-key:{uid}','algorithm':'ECDSA-P256','key_status':'active'}).execute()
+    if not r.data: raise HTTPException(500,'Could not create signing key record.')
+    return r.data[0]
+
+def sign(uid,h):
+    pem=fernet.decrypt(private_path(uid).read_bytes()).decode(); k=serialization.load_pem_private_key(pem.encode(),password=None)
+    return base64.b64encode(k.sign(h.encode(),ec.ECDSA(hashes.SHA256()))).decode()
+def verify(pub,h,sig):
     try:
-
-        uuid.UUID(case_id)
-
-    except ValueError:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid case_id."
-        )
-
-
-    # --------------------------------------------------------
-    # Validate document type
-    # --------------------------------------------------------
-
-    document_type = (
-        document_type
-        .strip()
-        .upper()
-    )
-
-
-    if document_type not in (
-        ALLOWED_DOCUMENT_TYPES
-    ):
-
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid document type."
-        )
-
-
-    # --------------------------------------------------------
-    # Check case permission
-    # --------------------------------------------------------
-
-    check_case_upload_permission(
-        user_id,
-        case_id
-    )
-
-
-    # --------------------------------------------------------
-    # Validate filename
-    # --------------------------------------------------------
-
-    if not file.filename:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Filename missing."
-        )
-
-
-    original_filename = (
-        os.path.basename(
-            file.filename
-        )
-    )
-
-
-    extension = os.path.splitext(
-        original_filename
-    )[1].lower()
-
-
-    if extension not in (
-        ALLOWED_EXTENSIONS
-    ):
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Unsupported file type. "
-                "Allowed: PDF, PNG, JPG, DOC, "
-                "DOCX, PPT, PPTX, TXT."
-            )
-        )
-
-
-    # --------------------------------------------------------
-    # Read file
-    # --------------------------------------------------------
-
-    file_bytes = await file.read()
-
-
-    if not file_bytes:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Empty file."
-        )
-
-
-    if len(file_bytes) > MAX_FILE_SIZE:
-
-        raise HTTPException(
-            status_code=413,
-            detail="File is larger than 50 MB."
-        )
-
-
-    # --------------------------------------------------------
-    # Determine file type
-    # --------------------------------------------------------
-
-    file_type = determine_file_type(
-        extension
-    )
-
-
-    # --------------------------------------------------------
-    # SHA-256
-    # --------------------------------------------------------
-
-    file_hash = calculate_file_hash(
-        file_bytes
-    )
-
-
-    # --------------------------------------------------------
-    # Generate / retrieve user's key
-    # --------------------------------------------------------
-
-    user_key = ensure_user_key(
-        user_id
-    )
-
-
-    # --------------------------------------------------------
-    # Create document
-    # --------------------------------------------------------
-
-    document_result = (
-        supabase
-        .table("documents")
-        .insert({
-            "case_id": case_id,
-            "document_type": document_type,
-            "file_type": file_type,
-            "uploader_id": user_id
-        })
-        .execute()
-    )
-
-
-    if not document_result.data:
-
-        raise HTTPException(
-            status_code=500,
-            detail="Could not create document."
-        )
-
-
-    document = (
-        document_result.data[0]
-    )
-
-
-    document_id = document[
-        "document_id"
-    ]
-
-
-    # --------------------------------------------------------
-    # Version ID
-    # --------------------------------------------------------
-
-    version_id = str(
-        uuid.uuid4()
-    )
-
-
-    # --------------------------------------------------------
-    # Check previous version
-    #
-    # For a brand-new document there won't be one.
-    # This will be used when we add replacement/version upload.
-    # --------------------------------------------------------
-
-    previous_version_hash = None
-
-
-    # --------------------------------------------------------
-    # Digital signature
-    # --------------------------------------------------------
-
-    signature = sign_file_hash(
-        user_id,
-        file_hash
-    )
-
-
-    # --------------------------------------------------------
-    # Storage path
-    # --------------------------------------------------------
-
-    safe_filename = (
-        original_filename
-        .replace("/", "_")
-        .replace("\\", "_")
-    )
-
-
-    storage_path = (
-        f"{case_id}/"
-        f"{document_id}/"
-        f"{version_id}/"
-        f"{safe_filename}"
-    )
-
-
-    # --------------------------------------------------------
-    # Upload original file
-    # --------------------------------------------------------
-
-    content_type = (
-        file.content_type
-        or mimetypes.guess_type(
-            original_filename
-        )[0]
-        or "application/octet-stream"
-    )
-
-
+        k=serialization.load_pem_public_key(pub.encode()); k.verify(base64.b64decode(sig,validate=True),h.encode(),ec.ECDSA(hashes.SHA256())); return True
+    except Exception: return False
+
+def allowed_view(uid,cid,dt):
+    m=membership(uid,cid); allowed=set(m.get('allowed_document_types') or [])
+    if dt not in allowed: raise HTTPException(403,'You are not authorized to view this document.')
+
+@app.get('/health')
+def health(): return {'status':'ok'}
+
+@app.get('/case/documents')
+def case_documents(case_id:str,authorization:str|None=Header(default=None)):
+    u=current_user(authorization); m=membership(u['user_id'],case_id); allowed=set(m.get('allowed_document_types') or [])
+    r=supabase.table('documents').select('document_id,case_id,document_type,file_type,uploader_id,current_version_id,document_versions!fk_documents_current_version(version_id,storage_path,file_hash,signature,timestamp)').eq('case_id',case_id).execute()
+    out=[]
+    for d in r.data or []:
+        if d['document_type'] not in allowed: continue
+        v=d.get('document_versions') or {}; v=v[0] if isinstance(v,list) and v else (v if isinstance(v,dict) else {})
+        p=v.get('storage_path')
+        out.append({'document_id':d['document_id'],'document_type':d['document_type'],'file_type':d['file_type'],'uploader_id':d['uploader_id'],'current_version_id':d['current_version_id'],'filename':os.path.basename(p) if p else 'Unnamed file','file_hash':v.get('file_hash'),'signature':v.get('signature'),'timestamp':v.get('timestamp')})
+    return {'my_permission_level':m['permission_level'],'my_allowed_document_types':sorted(allowed),'documents':out}
+
+@app.post('/documents/upload')
+async def upload_document(case_id:str=Form(...),document_type:str=Form(...),file:UploadFile=File(...),authorization:str|None=Header(default=None)):
+    u=current_user(authorization); uid=u['user_id']; dt=document_type.strip().lower()
+    try: uuid.UUID(case_id)
+    except ValueError: raise HTTPException(400,'Invalid case ID.')
+    if dt not in ALLOWED_DOCUMENT_TYPES: raise HTTPException(400,f'Invalid document type. Allowed: {sorted(ALLOWED_DOCUMENT_TYPES)}')
+    check_upload(uid,case_id,dt)
+    name=filename_of(file.filename); ext=Path(name).suffix.lower(); ft=file_type(ext); data=await file.read()
+    if not data: raise HTTPException(400,'The selected file is empty.')
+    if len(data)>MAX_FILE_SIZE: raise HTTPException(413,'File is larger than the 50 MB limit.')
+    h=sha256(data); key=ensure_key(uid); sig=sign(uid,h); did=str(uuid.uuid4()); vid=str(uuid.uuid4()); path=f'{case_id}/{did}/{vid}/{name}'
+    ctype=file.content_type or mimetypes.guess_type(name)[0] or 'application/octet-stream'
     try:
-
-        supabase.storage \
-            .from_(DOCUMENT_BUCKET) \
-            .upload(
-                storage_path,
-                file_bytes,
-                {
-                    "content-type":
-                        content_type,
-                    "upsert":
-                        False
-                }
-            )
-
-    except Exception as e:
-
-        # If storage fails, remove document row
-        try:
-
-            (
-                supabase
-                .table("documents")
-                .delete()
-                .eq(
-                    "document_id",
-                    document_id
-                )
-                .execute()
-            )
-
-        except Exception:
-            pass
-
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"File storage failed: {str(e)}"
-        )
-
-
-    # --------------------------------------------------------
-    # Create document version
-    # --------------------------------------------------------
-
-    version_result = (
-        supabase
-        .table("document_versions")
-        .insert({
-
-            "version_id":
-                version_id,
-
-            "document_id":
-                document_id,
-
-            "storage_path":
-                storage_path,
-
-            "file_hash":
-                file_hash,
-
-            "previous_version_hash":
-                previous_version_hash,
-
-            "signature":
-                signature,
-
-            "co_signature":
-                None,
-
-            "uploader_id":
-                user_id,
-
-            "timestamp":
-                datetime.now(
-                    timezone.utc
-                ).isoformat()
-        })
-        .execute()
-    )
-
-
-    if not version_result.data:
-
-        # Storage cleanup if DB insert failed
-
-        try:
-
-            (
-                supabase.storage
-                .from_(DOCUMENT_BUCKET)
-                .remove([
-                    storage_path
-                ])
-            )
-
-        except Exception:
-            pass
-
-
-        raise HTTPException(
-            status_code=500,
-            detail="Could not create document version."
-        )
-
-
-    # --------------------------------------------------------
-    # Update current version
-    # --------------------------------------------------------
-
-    (
-        supabase
-        .table("documents")
-        .update({
-            "current_version_id":
-                version_id
-        })
-        .eq(
-            "document_id",
-            document_id
-        )
-        .execute()
-    )
-
-
-    # --------------------------------------------------------
-    # Return result
-    # --------------------------------------------------------
-
-    return {
-
-        "success":
-            True,
-
-        "message":
-            "Document uploaded and digitally signed.",
-
-        "document_id":
-            document_id,
-
-        "version_id":
-            version_id,
-
-        "case_id":
-            case_id,
-
-        "filename":
-            original_filename,
-
-        "file_type":
-            file_type,
-
-        "file_size":
-            len(file_bytes),
-
-        "file_hash":
-            file_hash,
-
-        "hash_algorithm":
-            "SHA-256",
-
-        "signature":
-            signature,
-
-        "signature_algorithm":
-            "ECDSA-P256",
-
-        "public_key":
-            user_key[
-                "public_key"
-            ],
-
-        "storage_path":
-            storage_path
-    }
-
-
-# ============================================================
-# VERIFY DOCUMENT
-# ============================================================
-
-@app.get(
-    "/documents/verify/{version_id}"
-)
-def verify_document(
-    version_id: str
-):
-
-    # --------------------------------------------------------
-    # Get version
-    # --------------------------------------------------------
-
-    version_result = (
-        supabase
-        .table("document_versions")
-        .select("*")
-        .eq(
-            "version_id",
-            version_id
-        )
-        .limit(1)
-        .execute()
-    )
-
-
-    if not version_result.data:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Document version not found."
-        )
-
-
-    version = version_result.data[0]
-
-
-    uploader_id = version[
-        "uploader_id"
-    ]
-
-
-    # --------------------------------------------------------
-    # Get public key
-    # --------------------------------------------------------
-
-    key_result = (
-        supabase
-        .table("user_keys")
-        .select(
-            "public_key, algorithm, key_status"
-        )
-        .eq(
-            "user_id",
-            uploader_id
-        )
-        .eq(
-            "key_status",
-            "active"
-        )
-        .limit(1)
-        .execute()
-    )
-
-
-    if not key_result.data:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Uploader public key not found."
-        )
-
-
-    public_key = key_result.data[0][
-        "public_key"
-    ]
-
-
-    # --------------------------------------------------------
-    # Verify signature
-    # --------------------------------------------------------
-
-    valid_signature = verify_signature(
-        public_key,
-        version["file_hash"],
-        version["signature"]
-    )
-
-
-    return {
-
-        "valid":
-            valid_signature,
-
-        "version_id":
-            version_id,
-
-        "file_hash":
-            version["file_hash"],
-
-        "signature":
-            version["signature"],
-
-        "algorithm":
-            "ECDSA-P256",
-
-        "uploader_id":
-            uploader_id,
-
-        "message":
-            (
-                "Signature is valid."
-                if valid_signature
-                else
-                "Signature is INVALID."
-            )
-    }
+        supabase.storage.from_(DOCUMENT_BUCKET).upload(path,data,{'content-type':ctype,'upsert':False})
+        dr=supabase.table('documents').insert({'document_id':did,'case_id':case_id,'document_type':dt,'file_type':ft,'uploader_id':uid}).execute()
+        if not dr.data: raise RuntimeError('Could not create document row.')
+        vr=supabase.table('document_versions').insert({'version_id':vid,'document_id':did,'storage_path':path,'file_hash':h,'previous_version_hash':None,'signature':sig,'co_signature':None,'uploader_id':uid,'timestamp':datetime.now(timezone.utc).isoformat()}).execute()
+        if not vr.data: raise RuntimeError('Could not create document version row.')
+        ur=supabase.table('documents').update({'current_version_id':vid}).eq('document_id',did).execute()
+        if not ur.data: raise RuntimeError('Could not set current_version_id.')
+    except Exception as exc:
+        try: supabase.storage.from_(DOCUMENT_BUCKET).remove([path])
+        except Exception: pass
+        try: supabase.table('documents').delete().eq('document_id',did).execute()
+        except Exception: pass
+        raise HTTPException(500,f'Could not register document: {exc}') from exc
+    return {'success':True,'message':'File uploaded and digitally signed.','document_id':did,'version_id':vid,'filename':name,'file_size':len(data),'file_type':ft,'document_type':dt,'file_hash':h,'hash_algorithm':'SHA-256','signature':sig,'signature_algorithm':'ECDSA-P256','storage_path':path,'public_key':key['public_key']}
+
+@app.get('/documents/file/{version_id}')
+def document_file(version_id:str,authorization:str|None=Header(default=None)):
+    u=current_user(authorization); vr=supabase.table('document_versions').select('version_id,document_id,storage_path').eq('version_id',version_id).limit(1).execute()
+    if not vr.data: raise HTTPException(404,'Document version not found.')
+    v=vr.data[0]; dr=supabase.table('documents').select('document_id,case_id,document_type').eq('document_id',v['document_id']).limit(1).execute()
+    if not dr.data: raise HTTPException(404,'Document not found.')
+    d=dr.data[0]; allowed_view(u['user_id'],d['case_id'],d['document_type'])
+    try:
+        s=supabase.storage.from_(DOCUMENT_BUCKET).create_signed_url(v['storage_path'],SIGNED_URL_SECONDS)
+        url=s.get('signedURL') or s.get('signedUrl') or s.get('signed_url')
+        if not url: raise RuntimeError(f'No signed URL returned: {s}')
+        return {'url':url,'expires_in':SIGNED_URL_SECONDS}
+    except Exception as exc: raise HTTPException(500,f'Could not create secure file URL: {exc}') from exc
+
+@app.get('/documents/verify/{version_id}')
+def verify_document(version_id:str,authorization:str|None=Header(default=None)):
+    u=current_user(authorization); vr=supabase.table('document_versions').select('version_id,document_id,storage_path,file_hash,signature,uploader_id').eq('version_id',version_id).limit(1).execute()
+    if not vr.data: raise HTTPException(404,'Document version not found.')
+    v=vr.data[0]; dr=supabase.table('documents').select('document_id,case_id,document_type').eq('document_id',v['document_id']).limit(1).execute()
+    if not dr.data: raise HTTPException(404,'Document not found.')
+    d=dr.data[0]; allowed_view(u['user_id'],d['case_id'],d['document_type'])
+    try: stored=supabase.storage.from_(DOCUMENT_BUCKET).download(v['storage_path'])
+    except Exception as exc: raise HTTPException(500,f'Could not retrieve file: {exc}') from exc
+    actual=sha256(stored); hash_ok=secrets.compare_digest(actual,v['file_hash'])
+    kr=supabase.table('user_keys').select('public_key').eq('user_id',v['uploader_id']).eq('key_status','active').limit(1).execute()
+    if not kr.data: raise HTTPException(404,'Uploader public key not found.')
+    sig_ok=verify(kr.data[0]['public_key'],v['file_hash'],v['signature'])
+    return {'valid':bool(hash_ok and sig_ok),'hash_matches':hash_ok,'signature_valid':sig_ok,'stored_hash':v['file_hash'],'actual_hash':actual,'algorithm':'ECDSA-P256 + SHA-256','version_id':version_id,'uploader_id':v['uploader_id']}

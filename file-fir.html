@@ -2,93 +2,151 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>File an FIR</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>File Official FIR</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
-  h1 { font-size: 1.3rem; }
-  label { display: block; font-size: 0.85rem; font-weight: 600; margin-top: 14px; }
-  input, textarea { width: 100%; padding: 9px; margin-top: 4px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; font-family: inherit; }
-  textarea { min-height: 100px; resize: vertical; }
-  button { margin-top: 18px; padding: 10px 18px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; width: 100%; }
-  button:disabled { background: #93b4f0; cursor: not-allowed; }
-  #status { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 0.9rem; display: none; }
-  #status.success { background: #ecfdf5; color: #065f46; display: block; }
-  #status.error { background: #fef2f2; color: #991b1b; display: block; }
-  a.back { font-size: 0.85rem; color: #2563eb; }
+body{font-family:system-ui;max-width:760px;margin:30px auto;padding:0 20px;background:#f8fafc;color:#172033}
+.card{background:#fff;border:1px solid #dbe2ea;border-radius:14px;padding:24px}
+label{display:block;font-weight:600;margin-top:14px}
+input,textarea{width:100%;box-sizing:border-box;padding:11px;border:1px solid #cbd5e1;border-radius:8px;margin-top:6px}
+textarea{min-height:130px}
+button{margin-top:18px;padding:11px 18px;border:0;border-radius:8px;background:#2563eb;color:white;cursor:pointer;width:100%}
+button:disabled{opacity:.6}
+.status{margin-top:14px;padding:12px;border-radius:8px;white-space:pre-wrap}
+.success{background:#ecfdf5;color:#065f46}.error{background:#fef2f2;color:#991b1b}
+a{color:#2563eb}
+.small{color:#64748b;font-size:.9rem}
 </style>
 </head>
 <body>
+<a href="homepage.html">← Back to homepage</a>
+<div class="card">
+<h1>File an Official FIR</h1>
+<p class="small">The submitted form is converted into an official FIR PDF. The PDF is SHA-256 hashed and digitally signed before storage.</p>
 
-<a class="back" href="homepage.html">← Back to homepage</a>
-<h1>File a New FIR</h1>
-<p style="color:#666; font-size:0.9rem;">Your FIR number will be generated automatically once submitted — this form becomes the case's first signed document.</p>
+<form id="firForm">
+<label>Complainant Name
+<input id="complainantName" autocomplete="off" required>
+</label>
 
-<form id="fir-form">
-  <label>Complainant Name</label>
-  <input id="complainant_name" required />
+<label>Incident Type
+<input id="incidentType" placeholder="e.g. Theft, Assault, Homicide" required>
+</label>
 
-  <label>Incident Type</label>
-  <input id="incident_type" placeholder="e.g. Theft, Assault, Fraud" required />
+<label>Incident Date
+<input id="incidentDate" type="date" required>
+</label>
 
-  <label>Incident Date</label>
-  <input id="incident_date" type="date" required />
+<label>Location
+<input id="incidentLocation" required>
+</label>
 
-  <label>Location</label>
-  <input id="location" required />
+<label>Description
+<textarea id="incidentDescription" required></textarea>
+</label>
 
-  <label>Description</label>
-  <textarea id="description" required></textarea>
-
-  <button type="submit" id="submit-btn">File FIR</button>
+<button id="submitBtn" type="submit">Create, Sign & Store Official FIR</button>
 </form>
-<div id="status"></div>
+
+<div id="status" class="status" hidden></div>
+</div>
 
 <script>
-const API = "http://localhost:8000";
+const API = "http://127.0.0.1:8000";
 const token = sessionStorage.getItem("token");
-if (!token) window.location.href = "login.html?redirect=" + encodeURIComponent("file-fir.html");
 
-document.getElementById("fir-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const btn = document.getElementById("submit-btn");
-  const statusDiv = document.getElementById("status");
-  btn.disabled = true;
-  btn.textContent = "Filing…";
+const form = document.getElementById("firForm");
+const submitBtn = document.getElementById("submitBtn");
+const statusBox = document.getElementById("status");
 
-  const body = {
-    complainant_name: document.getElementById("complainant_name").value,
-    incident_type: document.getElementById("incident_type").value,
-    incident_date: document.getElementById("incident_date").value,
-    location: document.getElementById("location").value,
-    description: document.getElementById("description").value,
-  };
+const complainantName = document.getElementById("complainantName");
+const incidentType = document.getElementById("incidentType");
+const incidentDate = document.getElementById("incidentDate");
+const incidentLocation = document.getElementById("incidentLocation");
+const incidentDescription = document.getElementById("incidentDescription");
 
-  try {
-    const res = await fetch(`${API}/case/create`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
+if (!token) {
+    window.location.href = "login.html?redirect=file-fir.html";
+}
 
-    if (res.ok) {
-      statusDiv.className = "success";
-      statusDiv.textContent = `FIR filed: ${data.fir_id}`;
-      setTimeout(() => window.location.href = `case-detail.html?case_id=${data.case_id}`, 1200);
-    } else {
-      statusDiv.className = "error";
-      statusDiv.textContent = data.detail;
-      btn.disabled = false;
-      btn.textContent = "File FIR";
+function errorMessage(data, fallback) {
+    if (!data) return fallback;
+    if (typeof data.detail === "string") return data.detail;
+    if (Array.isArray(data.detail)) {
+        return data.detail.map(item => {
+            const field = Array.isArray(item.loc) ? item.loc.join(".") : "field";
+            return field + ": " + (item.msg || JSON.stringify(item));
+        }).join("\\n");
     }
-  } catch (err) {
-    statusDiv.className = "error";
-    statusDiv.textContent = `Could not reach the server: ${err.message}`;
-    btn.disabled = false;
-    btn.textContent = "File FIR";
-  }
+    if (data.message && typeof data.message === "string") return data.message;
+    return JSON.stringify(data, null, 2);
+}
+
+function showStatus(message, type) {
+    statusBox.hidden = false;
+    statusBox.className = "status " + type;
+    statusBox.textContent = message;
+}
+
+form.addEventListener("submit", async function(event) {
+    event.preventDefault();
+
+    if (!form.checkValidity()) {
+        form.reportValidity();
+        return;
+    }
+
+    const payload = {
+        complainant_name: complainantName.value.trim(),
+        incident_type: incidentType.value.trim(),
+        incident_date: incidentDate.value,
+        location: incidentLocation.value.trim(),
+        description: incidentDescription.value.trim()
+    };
+
+    console.log("FIR payload:", payload);
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Creating official FIR...";
+    showStatus("Submitting FIR...", "");
+
+    try {
+        const response = await fetch(API + "/case/create", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + token
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const raw = await response.text();
+        let data = {};
+        try { data = raw ? JSON.parse(raw) : {}; }
+        catch { data = {detail: raw || "Empty server response"}; }
+
+        if (!response.ok) {
+            throw new Error("HTTP " + response.status + ": " + errorMessage(data, "FIR creation failed."));
+        }
+
+        showStatus(
+            "FIR created successfully.\n\n" +
+            "FIR Number: " + data.fir_id + "\n" +
+            "The official FIR PDF was hashed, digitally signed and stored securely.",
+            "success"
+        );
+
+        setTimeout(function() {
+            window.location.href = "case-detail.html?case_id=" + encodeURIComponent(data.case_id);
+        }, 1200);
+
+    } catch (error) {
+        console.error("FIR creation error:", error);
+        showStatus(error.message || "Unable to create FIR.", "error");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Create, Sign & Store Official FIR";
+    }
 });
 </script>
-
 </body>
 </html>

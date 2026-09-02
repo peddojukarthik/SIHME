@@ -2,139 +2,428 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Case Detail</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Case Details</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 30px auto; padding: 0 20px; color: #1a1a1a; }
-  a.back { font-size: 0.85rem; color: #2563eb; }
-  h1 { font-size: 1.3rem; margin-bottom: 2px; }
-  .case-id-box { background: #f3f4f6; padding: 8px 12px; border-radius: 6px; font-family: monospace; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-  .case-id-box button { font-size: 0.75rem; padding: 4px 8px; border: none; border-radius: 4px; background: #2563eb; color: white; cursor: pointer; }
-  section { margin-top: 24px; }
-  section h2 { font-size: 1rem; border-bottom: 1px solid #eee; padding-bottom: 6px; }
-  .member-row, .doc-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f5f5f5; font-size: 0.9rem; }
-  .tag { font-size: 0.7rem; background: #eef2ff; color: #3730a3; padding: 2px 8px; border-radius: 999px; }
-  input, select { width: 100%; padding: 9px; margin-top: 6px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
-  button.primary { margin-top: 10px; padding: 8px 14px; border: none; border-radius: 6px; background: #2563eb; color: white; cursor: pointer; }
-  #upload-status { margin-top: 10px; padding: 10px; border-radius: 6px; font-size: 0.85rem; display: none; }
-  #upload-status.success { background: #ecfdf5; color: #065f46; display: block; }
-  #upload-status.error { background: #fef2f2; color: #991b1b; display: block; }
-  .hint { font-size: 0.8rem; color: #888; margin-top: 6px; }
+body{font-family:system-ui;max-width:900px;margin:25px auto;padding:0 18px;background:#f8fafc;color:#172033}
+.card{background:#fff;border:1px solid #dbe2ea;border-radius:14px;padding:20px;margin:14px 0}
+.top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.tabs{display:flex;gap:10px;flex-wrap:wrap}.tabs button{flex:1;min-width:150px}
+button{border:0;border-radius:8px;padding:10px 14px;background:#2563eb;color:#fff;cursor:pointer;margin:4px 0}
+.green{background:#047857}.gray{background:#475569}
+input,select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #cbd5e1;border-radius:8px;margin:6px 0 10px}
+.file,.member,.result{padding:13px 0;border-bottom:1px solid #e5e7eb}.meta{color:#64748b;font-size:.85rem}
+.hash{font-family:monospace;font-size:.72rem;word-break:break-all;background:#f1f5f9;padding:8px;border-radius:6px}
+.modal{display:none;position:fixed;inset:0;background:#0008;align-items:center;justify-content:center}.box{background:#fff;padding:24px;border-radius:14px;width:min(520px,92vw)}
+.status{padding:10px;border-radius:8px;margin-top:8px;white-space:pre-wrap}.error{background:#fef2f2;color:#991b1b}.success{background:#ecfdf5;color:#065f46}
+.checks{display:grid;grid-template-columns:1fr 1fr;gap:7px}.check{padding:8px;background:#f8fafc;border-radius:7px}
+a{color:#2563eb}
 </style>
 </head>
 <body>
+<a href="homepage.html">← Back to homepage</a>
 
-<a class="back" href="homepage.html">← Back to homepage</a>
-<h1 id="case-title">Case</h1>
-<div class="case-id-box">
-  <span id="case-id-text">—</span>
-  <button onclick="copyId()">Copy Case ID</button>
+<div class="card">
+  <div class="top">
+    <div>
+      <h1 id="title">Case</h1>
+      <div class="meta" id="caseIdText"></div>
+    </div>
+  </div>
+  <div class="tabs">
+    <button id="filesBtn">📁 Files</button>
+    <button id="uploadBtn">⬆ Upload Photos / Files</button>
+    <button id="membersBtn">👥 Members</button>
+  </div>
 </div>
-<p class="hint">To invite someone to this case, open <code>invite-case.html</code> directly and paste this Case ID — that page isn't linked from anywhere in the app on purpose.</p>
 
-<section>
-  <h2>Members</h2>
-  <div id="members-list">Loading…</div>
-</section>
+<div id="panel"></div>
 
-<section>
-  <h2>Files</h2>
-  <div id="files-list">Loading…</div>
-</section>
-
-<section id="upload-section" style="display:none;">
-  <h2>Upload a Document</h2>
-  <select id="document-type">
-    <option value="fir">FIR</option>
-    <option value="evidence">Evidence</option>
-    <option value="forensic_report">Forensic Report</option>
-    <option value="postmortem_report">Postmortem Report</option>
-    <option value="witness_statement">Witness Statement</option>
-    <option value="charge_sheet">Charge Sheet</option>
-    <option value="court_order">Court Order</option>
-    <option value="judgment">Judgment</option>
-  </select>
-  <input id="file-input" type="file" style="margin-top:8px;" />
-  <button class="primary" onclick="uploadFile()">Upload</button>
-  <div id="upload-status"></div>
-</section>
+<div id="otpModal" class="modal">
+  <div class="box">
+    <h2>Email verification</h2>
+    <p id="otpStatus">A 6-digit code will be sent to your official email.</p>
+    <input id="otpCode" maxlength="6" inputmode="numeric" placeholder="6-digit code">
+    <button id="verifyOtpBtn">Verify</button>
+    <button class="gray" id="cancelOtpBtn">Cancel</button>
+  </div>
+</div>
 
 <script>
-const API = "http://localhost:8000";
+const API = "http://127.0.0.1:8000";
 const token = sessionStorage.getItem("token");
-if (!token) window.location.href = "login.html?redirect=" + encodeURIComponent(window.location.pathname.split("/").pop() + window.location.search);
+const H = {"Authorization":"Bearer " + token};
 
-const params = new URLSearchParams(window.location.search);
-const caseId = params.get("case_id");
-document.getElementById("case-id-text").textContent = caseId || "no case_id in URL";
+const caseId = new URLSearchParams(window.location.search).get("case_id");
+const titleEl = document.getElementById("title");
+const caseIdEl = document.getElementById("caseIdText");
+const panelEl = document.getElementById("panel");
+const otpModalEl = document.getElementById("otpModal");
+const otpCodeEl = document.getElementById("otpCode");
+const otpStatusEl = document.getElementById("otpStatus");
 
-function copyId() {
-  navigator.clipboard.writeText(caseId);
-  alert("Case ID copied.");
+if (!token) window.location.href = "login.html";
+if (!caseId) window.location.href = "homepage.html";
+
+caseIdEl.textContent = caseId;
+
+function esc(value) {
+    return String(value ?? "").replace(/[&<>"']/g, c => ({
+        "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;"
+    }[c]));
 }
 
-async function loadMembers() {
-  const res = await fetch(`${API}/case/members?case_id=${caseId}`, { headers: { "Authorization": `Bearer ${token}` } });
-  const data = await res.json();
-  const el = document.getElementById("members-list");
-  if (!res.ok) { el.innerHTML = `<p style="color:#991b1b;">${data.detail}</p>`; return; }
-
-  document.getElementById("case-title").textContent = "Case";
-  el.innerHTML = data.members.map(m => `
-    <div class="member-row">
-      <span>${m.users.employee_registry.full_name} <span class="tag">${m.users.employee_registry.departments.name}</span></span>
-      <span>${m.permission_level} · ${(m.allowed_document_types || []).join(", ") || "no types"}</span>
-    </div>
-  `).join("") || "<p style='color:#888;'>No members.</p>";
-
-  // Only show the upload widget if the viewer actually has upload rights
-  if (["upload", "sign", "grant"].includes(data.my_access.permission_level)) {
-    document.getElementById("upload-section").style.display = "block";
-  }
+function errText(data) {
+    if (typeof data?.detail === "string") return data.detail;
+    if (Array.isArray(data?.detail)) {
+        return data.detail.map(x => {
+            const loc = Array.isArray(x.loc) ? x.loc.join(".") : "field";
+            return loc + ": " + (x.msg || JSON.stringify(x));
+        }).join("; ");
+    }
+    return data?.message || JSON.stringify(data);
 }
 
-async function loadDocuments() {
-  const res = await fetch(`${API}/case/documents?case_id=${caseId}`, { headers: { "Authorization": `Bearer ${token}` } });
-  const data = await res.json();
-  const el = document.getElementById("files-list");
-  if (!res.ok) { el.innerHTML = `<p style="color:#991b1b;">${data.detail}</p>`; return; }
+async function api(path, options={}) {
+    const response = await fetch(API + path, {
+        ...options,
+        headers: {...(options.headers || {}), ...H}
+    });
 
-  if (data.documents.length === 0) {
-    el.innerHTML = `<p style="color:#888;">No files visible to you yet. Your access covers: ${data.my_allowed_document_types.join(", ") || "nothing"}.</p>`;
-    return;
-  }
-  el.innerHTML = data.documents.map(d => `
-    <div class="doc-row">
-      <span>${d.document_type} <span class="tag">${d.file_type}</span></span>
-      <span style="font-family:monospace; font-size:0.75rem; color:#888;">${d.document_id.slice(0,8)}…</span>
-    </div>
-  `).join("");
+    const raw = await response.text();
+    let data = {};
+    try { data = raw ? JSON.parse(raw) : {}; }
+    catch { data = {detail: raw}; }
+
+    if (!response.ok) {
+        throw new Error("HTTP " + response.status + ": " + errText(data));
+    }
+    return data;
 }
 
-async function uploadFile() {
-  const fileInput = document.getElementById("file-input");
-  const documentType = document.getElementById("document-type").value;
-  const statusDiv = document.getElementById("upload-status");
-  if (!fileInput.files.length) { alert("Choose a file first."); return; }
+let pendingPurpose = null;
+let pendingAction = null;
 
-  const formData = new FormData();
-  formData.append("case_id", caseId);
-  formData.append("document_type", documentType);
-  formData.append("file", fileInput.files[0]);
+async function protectedAction(purpose, action) {
+    pendingPurpose = purpose;
+    pendingAction = action;
 
-  const res = await fetch(`${API}/documents/upload`, {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${token}` },
-    body: formData,
-  });
-  const data = await res.json();
-  statusDiv.className = res.ok ? "success" : "error";
-  statusDiv.textContent = res.ok ? "Uploaded and signed successfully." : data.detail;
-  if (res.ok) loadDocuments();
+    try {
+        const data = await api("/security/request-otp", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({purpose, case_id:caseId})
+        });
+
+        otpStatusEl.textContent = data.message || "Enter the code sent to your official email.";
+        otpCodeEl.value = "";
+        otpModalEl.style.display = "flex";
+        setTimeout(() => otpCodeEl.focus(), 50);
+    } catch (error) {
+        alert(error.message);
+    }
 }
 
-loadMembers();
-loadDocuments();
+async function verifyOtp() {
+    try {
+        await api("/security/verify-otp", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({
+                purpose:pendingPurpose,
+                case_id:caseId,
+                code:otpCodeEl.value.trim()
+            })
+        });
+
+        otpModalEl.style.display = "none";
+
+        if (pendingAction) await pendingAction();
+
+    } catch (error) {
+        otpStatusEl.className = "status error";
+        otpStatusEl.textContent = error.message;
+    }
+}
+
+document.getElementById("verifyOtpBtn").addEventListener("click", verifyOtp);
+document.getElementById("cancelOtpBtn").addEventListener("click", () => {
+    otpModalEl.style.display = "none";
+});
+
+document.getElementById("filesBtn").addEventListener(
+    "click", () => protectedAction("VIEW_FILES", showFiles)
+);
+document.getElementById("uploadBtn").addEventListener(
+    "click", () => protectedAction("UPLOAD_FILE", showUpload)
+);
+document.getElementById("membersBtn").addEventListener(
+    "click", () => protectedAction("MANAGE_MEMBERS", showMembers)
+);
+
+async function showFiles() {
+    try {
+        const data = await api("/case/documents?case_id=" + encodeURIComponent(caseId));
+
+        panelEl.innerHTML = `
+        <div class="card">
+            <h2>Files for this case</h2>
+            ${
+                data.documents.length
+                ? data.documents.map(fileHtml).join("")
+                : `<p class="meta">No files visible to you.</p>`
+            }
+        </div>`;
+    } catch (error) {
+        panelEl.innerHTML = `<div class="status error">${esc(error.message)}</div>`;
+    }
+}
+
+function fileHtml(x) {
+    const v = x.version || {};
+    return `
+    <div class="file">
+        <b>${esc((x.document_type || "").replaceAll("_"," ").toUpperCase())}</b>
+        <div class="meta">${esc(x.filename)} · ${esc(x.file_type)}</div>
+        <div class="meta">Uploaded: ${esc(v.timestamp)}</div>
+        <div class="hash">SHA-256: ${esc(v.file_hash || "not available")}</div>
+        <button data-view="${esc(v.version_id)}">View File</button>
+        <button class="green" data-verify="${esc(v.version_id)}">Verify Integrity</button>
+    </div>`;
+}
+
+async function viewFile(id) {
+    try {
+        const data = await api("/documents/file/" + encodeURIComponent(id));
+        window.open(data.url, "_blank", "noopener");
+    } catch (error) { alert(error.message); }
+}
+
+async function verifyFile(id) {
+    try {
+        const data = await api("/documents/verify/" + encodeURIComponent(id));
+        alert(
+            (data.valid ? "✓ VERIFIED" : "✗ INVALID") +
+            "\\n\\nHash valid: " + data.hash_valid +
+            "\\nSignature valid: " + data.signature_valid +
+            "\\n\\nStored: " + data.stored_hash +
+            "\\nActual: " + data.actual_hash
+        );
+    } catch (error) { alert(error.message); }
+}
+
+panelEl.addEventListener("click", function(event) {
+    const view = event.target.closest("[data-view]");
+    if (view) viewFile(view.dataset.view);
+
+    const verify = event.target.closest("[data-verify]");
+    if (verify) verifyFile(verify.dataset.verify);
+});
+
+function showUpload() {
+    panelEl.innerHTML = `
+    <div class="card">
+        <h2>Upload Photos / Files</h2>
+        <label>Document type</label>
+        <select id="documentType">
+            <option value="evidence">Evidence</option>
+            <option value="witness_statement">Witness Statement</option>
+            <option value="forensic_report">Forensic Report</option>
+            <option value="postmortem_report">Postmortem Report</option>
+            <option value="charge_sheet">Charge Sheet</option>
+            <option value="court_order">Court Order</option>
+            <option value="judgment">Judgment</option>
+        </select>
+        <input id="uploadFileInput" type="file"
+            accept=".pdf,.png,.jpg,.jpeg,.doc,.docx,.ppt,.pptx,.txt">
+        <button id="uploadSubmit">Upload & Sign</button>
+        <div id="uploadStatus"></div>
+    </div>`;
+
+    document.getElementById("uploadSubmit").addEventListener("click", upload);
+}
+
+async function upload() {
+    const fileInput = document.getElementById("uploadFileInput");
+    const typeInput = document.getElementById("documentType");
+    const status = document.getElementById("uploadStatus");
+
+    if (!fileInput.files.length) {
+        status.className = "status error";
+        status.textContent = "Choose a file.";
+        return;
+    }
+
+    const fd = new FormData();
+    fd.append("case_id", caseId);
+    fd.append("document_type", typeInput.value);
+    fd.append("file", fileInput.files[0]);
+
+    try {
+        const data = await api("/documents/upload", {
+            method:"POST",
+            body:fd
+        });
+
+        status.className = "status success";
+        status.textContent = data.message || "Uploaded and signed.";
+        setTimeout(showFiles, 500);
+    } catch (error) {
+        status.className = "status error";
+        status.textContent = error.message;
+    }
+}
+
+async function showMembers() {
+    try {
+        const data = await api("/case/members?case_id=" + encodeURIComponent(caseId));
+
+        let html = `
+        <div class="card">
+            <h2>Members</h2>
+            ${
+                data.members.map(m => `
+                <div class="member">
+                    <b>${esc(m.users?.employee_registry?.full_name || m.users?.employee_id || "User")}</b>
+                    <div class="meta">
+                        ${esc(m.permission_level)} ·
+                        ${(m.allowed_document_types || []).map(esc).join(", ")}
+                    </div>
+                </div>`).join("")
+            }`;
+
+        if (data.my_access.permission_level === "grant") {
+            html += `
+                <hr>
+                <h2>Add Member</h2>
+                <input id="memberSearch" placeholder="Search employee name or ID">
+                <div id="memberResults"></div>`;
+        }
+
+        html += "</div>";
+        panelEl.innerHTML = html;
+
+        const search = document.getElementById("memberSearch");
+        if (search) {
+            let timer;
+            search.addEventListener("input", () => {
+                clearTimeout(timer);
+                const q = search.value.trim();
+                if (q.length < 2) return;
+
+                timer = setTimeout(() => searchMembers(q), 250);
+            });
+        }
+
+    } catch (error) {
+        panelEl.innerHTML = `<div class="status error">${esc(error.message)}</div>`;
+    }
+}
+
+async function searchMembers(q) {
+    const results = document.getElementById("memberResults");
+
+    try {
+        const data = await api(
+            "/case/search-members?case_id=" +
+            encodeURIComponent(caseId) +
+            "&q=" + encodeURIComponent(q)
+        );
+
+        results.innerHTML = data.length
+            ? data.map(x => `
+                <div class="result">
+                    <b>${esc(x.full_name)}</b>
+                    <div class="meta">${esc(x.employee_id)} · ${esc(x.official_email)}</div>
+                    <button data-select-member="${esc(x.employee_id)}">Select</button>
+                </div>`).join("")
+            : `<p class="meta">No results.</p>`;
+
+        results.querySelectorAll("[data-select-member]").forEach(btn => {
+            btn.addEventListener("click", () => openGrant(btn.dataset.selectMember));
+        });
+
+    } catch (error) {
+        results.innerHTML = `<div class="status error">${esc(error.message)}</div>`;
+    }
+}
+
+async function openGrant(employeeId) {
+    try {
+        const data = await api(
+            "/case/invite-options?case_id=" + encodeURIComponent(caseId)
+        );
+
+        const checks = data.allowed_document_types.map(t => `
+            <label class="check">
+                <input type="checkbox" class="grantType" checked value="${esc(t)}">
+                ${esc(t.replaceAll("_"," "))}
+            </label>`).join("");
+
+        panelEl.innerHTML = `
+        <div class="card">
+            <h2>Grant Access</h2>
+            <p>Employee: <b>${esc(employeeId)}</b></p>
+
+            <label>Permission</label>
+            <select id="permission">
+                <option value="read">Read only</option>
+                <option value="upload">Upload</option>
+                <option value="sign">Sign</option>
+                <option value="grant">Grant</option>
+            </select>
+
+            <label>Documents</label>
+            <div class="checks">${checks}</div>
+
+            <button id="confirmGrant">Confirm Grant</button>
+            <button class="gray" id="cancelGrant">Cancel</button>
+            <div id="grantStatus"></div>
+        </div>`;
+
+        document.getElementById("confirmGrant")
+            .addEventListener("click", () => submitGrant(employeeId));
+        document.getElementById("cancelGrant")
+            .addEventListener("click", showMembers);
+
+    } catch (error) {
+        alert(error.message);
+    }
+}
+
+async function submitGrant(employeeId) {
+    const types = [...document.querySelectorAll(".grantType:checked")]
+        .map(x => x.value);
+
+    const status = document.getElementById("grantStatus");
+
+    if (!types.length) {
+        status.className = "status error";
+        status.textContent = "Select at least one document type.";
+        return;
+    }
+
+    try {
+        const data = await api("/case/invite", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({
+                case_id:caseId,
+                employee_id:employeeId,
+                permission_level:document.getElementById("permission").value,
+                allowed_document_types:types
+            })
+        });
+
+        status.className = "status success";
+        status.textContent = data.message || "Access granted.";
+        setTimeout(showMembers, 700);
+
+    } catch (error) {
+        status.className = "status error";
+        status.textContent = error.message;
+    }
+}
 </script>
-
 </body>
 </html>

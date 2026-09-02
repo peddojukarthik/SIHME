@@ -1,244 +1,39 @@
-import os
-import base64
-import hashlib
+import base64, hashlib, os
 from pathlib import Path
-
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet
-
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-
 load_dotenv()
+KEY_ENCRYPTION_KEY=os.getenv('KEY_ENCRYPTION_KEY')
+if not KEY_ENCRYPTION_KEY: raise RuntimeError('KEY_ENCRYPTION_KEY is missing from .env')
+fernet=Fernet(KEY_ENCRYPTION_KEY.encode())
+PRIVATE_KEY_DIR=Path(os.getenv('PRIVATE_KEY_DIR','./private_keys'))
+PRIVATE_KEY_DIR.mkdir(parents=True,exist_ok=True)
 
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-KEY_ENCRYPTION_KEY = os.environ["KEY_ENCRYPTION_KEY"]
-
-fernet = Fernet(
-    KEY_ENCRYPTION_KEY.encode()
-)
-
-
-KEY_DIRECTORY = Path(
-    os.getenv(
-        "PRIVATE_KEY_DIRECTORY",
-        "./private_keys"
-    )
-)
-
-KEY_DIRECTORY.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-
-# ============================================================
-# SHA-256
-# ============================================================
-
-def calculate_file_hash(
-    file_bytes: bytes
-) -> str:
-
-    return hashlib.sha256(
-        file_bytes
-    ).hexdigest()
-
-
-# ============================================================
-# KEY GENERATION
-# ============================================================
-
+def calculate_file_hash(file_bytes:bytes)->str: return hashlib.sha256(file_bytes).hexdigest()
 def generate_user_key_pair():
+    private=ec.generate_private_key(ec.SECP256R1()); public=private.public_key()
+    priv=private.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()).decode()
+    pub=public.public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    return priv,pub
 
-    private_key = ec.generate_private_key(
-        ec.SECP256R1()
-    )
+def _path(uid): return PRIVATE_KEY_DIR/f'{uid}.key'
+def save_private_key(uid,pem):
+    p=_path(uid); p.write_bytes(fernet.encrypt(pem.encode()))
+    try: os.chmod(p,0o600)
+    except OSError: pass
 
-    public_key = private_key.public_key()
+def load_private_key(uid): return fernet.decrypt(_path(uid).read_bytes()).decode()
+def sign_file_hash(uid,file_hash):
+    key=serialization.load_pem_private_key(load_private_key(uid).encode(),password=None)
+    sig=key.sign(file_hash.encode(),ec.ECDSA(hashes.SHA256()))
+    return base64.b64encode(sig).decode()
 
-
-    private_bytes = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-
-
-    public_bytes = public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-
-
-    return (
-        private_bytes.decode(),
-        public_bytes.decode()
-    )
-
-
-# ============================================================
-# PRIVATE KEY ENCRYPTION
-# ============================================================
-
-def encrypt_private_key(
-    private_key: str
-) -> bytes:
-
-    return fernet.encrypt(
-        private_key.encode()
-    )
-
-
-def decrypt_private_key(
-    encrypted_private_key: bytes
-) -> str:
-
-    return fernet.decrypt(
-        encrypted_private_key
-    ).decode()
-
-
-# ============================================================
-# LOCAL ENCRYPTED PRIVATE KEY STORAGE
-# ============================================================
-
-def private_key_path(
-    user_id: str
-) -> Path:
-
-    return (
-        KEY_DIRECTORY /
-        f"{user_id}.key"
-    )
-
-
-def save_private_key(
-    user_id: str,
-    private_key: str
-):
-
-    encrypted = encrypt_private_key(
-        private_key
-    )
-
-    path = private_key_path(
-        user_id
-    )
-
-    path.write_bytes(
-        encrypted
-    )
-
-    # Owner-readable only where supported
+def verify_signature(public_key_pem,file_hash,signature):
     try:
-        os.chmod(
-            path,
-            0o600
-        )
-    except Exception:
-        pass
-
-
-def load_private_key(
-    user_id: str
-) -> str:
-
-    path = private_key_path(
-        user_id
-    )
-
-    if not path.exists():
-
-        raise FileNotFoundError(
-            "Private key not found for user."
-        )
-
-    encrypted = path.read_bytes()
-
-    return decrypt_private_key(
-        encrypted
-    )
-
-
-# ============================================================
-# SIGN FILE HASH
-# ============================================================
-
-def sign_file_hash(
-    user_id: str,
-    file_hash: str
-) -> str:
-
-    private_pem = load_private_key(
-        user_id
-    )
-
-    private_key = (
-        serialization
-        .load_pem_private_key(
-            private_pem.encode(),
-            password=None
-        )
-    )
-
-
-    signature = private_key.sign(
-        file_hash.encode(),
-        ec.ECDSA(
-            hashes.SHA256()
-        )
-    )
-
-
-    return base64.b64encode(
-        signature
-    ).decode()
-
-
-# ============================================================
-# VERIFY
-# ============================================================
-
-def verify_signature(
-    public_key_pem: str,
-    file_hash: str,
-    signature: str
-) -> bool:
-
-    try:
-
-        public_key = (
-            serialization
-            .load_pem_public_key(
-                public_key_pem.encode()
-            )
-        )
-
-
-        signature_bytes = (
-            base64.b64decode(
-                signature
-            )
-        )
-
-
-        public_key.verify(
-            signature_bytes,
-            file_hash.encode(),
-            ec.ECDSA(
-                hashes.SHA256()
-            )
-        )
-
+        key=serialization.load_pem_public_key(public_key_pem.encode())
+        key.verify(base64.b64decode(signature,validate=True),file_hash.encode(),ec.ECDSA(hashes.SHA256()))
         return True
-
-    except Exception:
-
-        return False
+    except Exception: return False
