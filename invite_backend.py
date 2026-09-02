@@ -1,4 +1,3 @@
-
 """
 SIH Secure DMS - unified backend v10
 
@@ -34,11 +33,11 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib import colors
-
+from fir_pdf import generate_fir_pdf
 from document_crypto import (
     calculate_file_hash,
     generate_user_key_pair,
-    save_private_key,
+    encrypt_private_key,
     sign_file_hash,
     verify_signature,
 )
@@ -103,6 +102,31 @@ def error_text(exc):
     if parts:
         return " | ".join(parts)
     return str(exc)
+
+
+def login_user_lookup_with_retry(employee_id, attempts=3):
+    """
+    Supabase/httpx can occasionally surface a transient Windows DNS error
+    (getaddrinfo failed / WinError 11001). Retry only the login lookup.
+    """
+    last_exc = None
+    for attempt in range(attempts):
+        try:
+            return (
+                supabase.table("users")
+                .select(
+                    "user_id,password_hash,account_status,totp_secret,"
+                    "employee_registry!fk_users_employee("
+                    "full_name,department_id,departments(type,name))"
+                )
+                .eq("employee_id", employee_id).limit(1).execute()
+            )
+        except Exception as exc:
+            last_exc = exc
+            if attempt < attempts - 1:
+                import time
+                time.sleep(0.5 * (attempt + 1))
+    raise last_exc
 
 
 def parse_dt(value):
@@ -201,35 +225,73 @@ def me(authorization: str | None = Header(default=None)):
     return get_current_user(authorization)
 
 
-def ensure_user_key(user_id: str):
+def ensure_user_key(user_id, supabase):
+    """
+    Ensure the user has one usable active signing key.
+
+    Migration behavior:
+    - An active key with encrypted_private_key is reused.
+    - An active key without encrypted_private_key is rotated.
+    - A fresh RSA-3072 key is generated and its private key is encrypted
+      with KEY_ENCRYPTION_KEY and stored in Supabase.
+    - Old public keys are never deleted.
+    """
     try:
-        existing = (
+        result = (
             supabase.table("user_keys")
-            .select("key_id,public_key,kms_key_reference,algorithm,key_status")
-            .eq("user_id", user_id).eq("key_status", "active")
-            .limit(1).execute()
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("key_status", "active")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
         )
-        if existing.data:
-            return existing.data[0]
-
-        private_key, public_key = generate_user_key_pair()
-        save_private_key(user_id, private_key)
-
-        result = supabase.table("user_keys").insert({
-            "user_id": user_id,
-            "public_key": public_key,
-            "kms_key_reference": f"local-encrypted-key:{user_id}",
-            "algorithm": "ECDSA-P256",
-            "key_status": "active",
-        }).execute()
-
-        if not result.data:
-            raise RuntimeError("user_keys insert returned no row")
-        return result.data[0]
-    except HTTPException:
-        raise
     except Exception as exc:
-        raise HTTPException(500, f"Could not create signing key: {error_text(exc)}")
+        raise RuntimeError(f"Signing-key lookup failed: {error_text(exc)}")
+
+    active_key = result.data[0] if result.data else None
+
+    # Current key is complete and usable.
+    if active_key and active_key.get("encrypted_private_key"):
+        return active_key
+
+    # The existing active key is unusable because its private key is absent.
+    # Rotate it rather than failing login.
+    if active_key:
+        try:
+            supabase.table("user_keys").update({
+                "key_status": "rotated"
+            }).eq("key_id", active_key["key_id"]).execute()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not rotate unusable signing key: {error_text(exc)}"
+            )
+
+    private_pem, public_pem = generate_user_key_pair()
+    encrypted_private = encrypt_private_key(private_pem)
+
+    try:
+        created = (
+            supabase.table("user_keys")
+            .insert({
+                "user_id": user_id,
+                "public_key": public_pem.decode("utf-8"),
+                "encrypted_private_key": encrypted_private,
+                "algorithm": "RSA-PSS-SHA256",
+                "key_status": "active",
+                "kms_key_reference": f"supabase-encrypted-private:{user_id}",
+            })
+            .execute()
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not create replacement signing key: {error_text(exc)}"
+        )
+
+    if not created.data:
+        raise RuntimeError("Replacement signing-key insert returned no row.")
+
+    return created.data[0]
 
 
 @app.post("/login")
@@ -240,15 +302,7 @@ def login(req: dict):
         raise HTTPException(400, "Employee ID and password are required.")
 
     try:
-        result = (
-            supabase.table("users")
-            .select(
-                "user_id,password_hash,account_status,totp_secret,"
-                "employee_registry!fk_users_employee("
-                "full_name,department_id,departments(type,name))"
-            )
-            .eq("employee_id", employee_id).limit(1).execute()
-        )
+        result = login_user_lookup_with_retry(employee_id)
     except Exception as exc:
         raise HTTPException(500, f"Login lookup failed: {error_text(exc)}")
 
@@ -275,7 +329,7 @@ def login(req: dict):
             "expires_at": iso(now() + timedelta(hours=SESSION_LIFETIME_HOURS)),
         }).execute()
         # Every user gets a signing key on first login.
-        ensure_user_key(user["user_id"])
+        ensure_user_key(user["user_id"], supabase)
     except HTTPException:
         raise
     except Exception as exc:
@@ -737,13 +791,11 @@ def generate_fir_number():
 
 
 class CreateCaseRequest(BaseModel):
-    # Optional here so FastAPI returns a readable 400 instead of a cryptic 422
-    # when an older/stale frontend sends a malformed payload.
-    complainant_name: str | None = None
-    incident_type: str | None = None
-    incident_date: str | None = None
-    location: str | None = None
-    description: str | None = None
+    complainant_name: str
+    incident_type: str
+    incident_date: str
+    location: str
+    description: str
 
 
 def make_fir_pdf(fir_id, u, req, filed_at):
@@ -810,7 +862,7 @@ def make_fir_pdf(fir_id, u, req, filed_at):
         p(
             "This FIR was generated by Secure DMS from the submitted form. "
             "The final PDF bytes are SHA-256 hashed and digitally signed "
-            "with the filing user's ECDSA-P256 private key."
+            "with the filing user's RSA-PSS-SHA256 private key."
         ),
         Spacer(1, 30),
         p(f"<b>Digital Signatory:</b> {u['full_name']} ({u['employee_id']})"),
@@ -825,81 +877,175 @@ def create_case(
     req: CreateCaseRequest,
     authorization: str | None = Header(default=None),
 ):
-    u = get_current_user(authorization)
-    if u["department_type"] != "police":
-        raise HTTPException(403, "Only police department members can file an FIR.")
+    current_user = get_current_user(authorization)
 
-    missing = [
-        name for name, value in {
-            "complainant_name": req.complainant_name,
-            "incident_type": req.incident_type,
-            "incident_date": req.incident_date,
-            "location": req.location,
-            "description": req.description,
-        }.items()
-        if value is None or not str(value).strip()
-    ]
-    if missing:
-        raise HTTPException(400, "Missing required FIR field(s): " + ", ".join(missing))
+    if current_user["department_type"] != "police":
+        raise HTTPException(
+            status_code=403,
+            detail="Only police department members can file an FIR.",
+        )
 
+    # Generate the FIR reference.
     fir_id = generate_fir_number()
-    filed_at = iso(now())
 
-    try:
-        # 1. Case row.
-        case_result = supabase.table("cases").insert({
+    filed_at = datetime.now(timezone.utc).isoformat()
+
+    # ------------------------------------------------------------
+    # Create the case first.
+    # ------------------------------------------------------------
+
+    case_result = (
+        supabase.table("cases")
+        .insert({
             "fir_id": fir_id,
             "status": "open",
-            "created_by": u["user_id"],
-        }).execute()
-        if not case_result.data:
-            raise RuntimeError("Case insert returned no row.")
-        case_id = case_result.data[0]["case_id"]
+            "created_by": current_user["user_id"],
+        })
+        .execute()
+    )
 
-        # 2. Owner gets full case rights.
-        supabase.table("case_membership").insert({
-            "user_id": u["user_id"],
+    if not case_result.data:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create the case."
+        )
+
+    case_id = case_result.data[0]["case_id"]
+
+    # ------------------------------------------------------------
+    # Give the FIR creator full case-management permission.
+    # ------------------------------------------------------------
+
+    membership_result = (
+        supabase.table("case_membership")
+        .insert({
+            "user_id": current_user["user_id"],
             "case_id": case_id,
             "permission_level": "grant",
-            "granted_by": u["user_id"],
+            "granted_by": current_user["user_id"],
             "allowed_document_types": [
-                "fir", "evidence", "witness_statement", "forensic_report",
-                "postmortem_report", "charge_sheet", "court_order", "judgment"
+                "fir",
+                "evidence",
+                "witness_statement",
+                "charge_sheet",
             ],
-        }).execute()
+        })
+        .execute()
+    )
 
-        # 3. Official FIR PDF.
-        pdf_bytes = make_fir_pdf(fir_id, u, req, filed_at)
+    if not membership_result.data:
+        # Do not leave an ownerless case.
+        try:
+            supabase.table("cases").delete().eq(
+                "case_id", case_id
+            ).execute()
+        except Exception:
+            pass
 
-        # 4. Hash + user signing key + signature.
-        file_hash = calculate_file_hash(pdf_bytes)
-        ensure_user_key(u["user_id"])
-        signature = sign_file_hash(u["user_id"], file_hash)
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create case membership."
+        )
 
-        # 5. Document row.
-        dr = supabase.table("documents").insert({
+    # ------------------------------------------------------------
+    # Create the ACTUAL official FIR PDF.
+    # ------------------------------------------------------------
+
+    pdf_bytes = generate_fir_pdf(
+        fir_number=fir_id,
+        filed_at=filed_at,
+        filed_by=current_user["full_name"],
+        employee_id=current_user.get("employee_id", ""),
+        department=current_user["department_name"],
+        complainant_name=req.complainant_name,
+        incident_type=req.incident_type,
+        incident_date=req.incident_date,
+        location=req.location,
+        description=req.description,
+    )
+
+    # ------------------------------------------------------------
+    # Hash the EXACT PDF bytes that will be stored.
+    # ------------------------------------------------------------
+
+    file_hash = calculate_file_hash(pdf_bytes)
+
+    # ------------------------------------------------------------
+    # Make sure this user has a persistent signing key.
+    # ------------------------------------------------------------
+
+    ensure_user_key(current_user["user_id"], supabase)
+
+    # sign_file_hash now retrieves/decrypts the private key
+    # from Supabase instead of reading ./private_keys.
+    signature = sign_file_hash(
+        current_user["user_id"],
+        file_hash,
+        supabase,
+    )
+
+    document_result = (
+        supabase.table("documents")
+        .insert({
             "case_id": case_id,
             "document_type": "fir",
             "file_type": "text",
-            "uploader_id": u["user_id"],
-        }).execute()
-        if not dr.data:
-            raise RuntimeError("FIR document insert returned no row.")
-        document_id = dr.data[0]["document_id"]
+            "uploader_id": current_user["user_id"],
+        })
+        .execute()
+    )
 
-        # 6. Immutable-looking version identity and case-scoped path.
-        version_id = str(uuid.uuid4())
-        storage_path = f"{case_id}/{document_id}/{version_id}/fir_{fir_id}.pdf"
+    if not document_result.data:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not create FIR document record."
+        )
 
-        # 7. Storage.
+    document_id = document_result.data[0]["document_id"]
+
+    version_id = str(uuid.uuid4())
+
+    storage_path = (
+        f"{case_id}/"
+        f"{document_id}/"
+        f"{version_id}/"
+        f"FIR_{fir_id}.pdf"
+    )
+
+    # ------------------------------------------------------------
+    # Storage is private.
+    # The path contains the case UUID, so files are grouped by case.
+    # ------------------------------------------------------------
+
+    try:
         supabase.storage.from_(DOCUMENT_BUCKET).upload(
             storage_path,
             pdf_bytes,
-            {"content-type": "application/pdf", "upsert": False},
+            {
+                "content-type": "application/pdf",
+                "upsert": False,
+            },
+        )
+    except Exception as exc:
+        try:
+            supabase.table("documents").delete().eq(
+                "document_id", document_id
+            ).execute()
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"FIR PDF storage failed: {exc}",
         )
 
-        # 8. Signed version record.
-        vr = supabase.table("document_versions").insert({
+    # ------------------------------------------------------------
+    # Append the signed version.
+    # ------------------------------------------------------------
+
+    version_result = (
+        supabase.table("document_versions")
+        .insert({
             "version_id": version_id,
             "document_id": document_id,
             "storage_path": storage_path,
@@ -907,41 +1053,65 @@ def create_case(
             "previous_version_hash": None,
             "signature": signature,
             "co_signature": None,
-            "uploader_id": u["user_id"],
+            "uploader_id": current_user["user_id"],
             "timestamp": filed_at,
-        }).execute()
-        if not vr.data:
-            raise RuntimeError("FIR document_versions insert returned no row.")
+        })
+        .execute()
+    )
 
-        supabase.table("documents").update({
-            "current_version_id": version_id
-        }).eq("document_id", document_id).execute()
+    if not version_result.data:
+        try:
+            supabase.storage.from_(DOCUMENT_BUCKET).remove(
+                [storage_path]
+            )
+        except Exception:
+            pass
 
-        notify(
-            u["user_id"],
-            "FIR filed",
-            f"{fir_id} was created and digitally signed by {u['full_name']}.",
-            "fir_created",
-            case_id=case_id,
-        )
+        try:
+            supabase.table("documents").delete().eq(
+                "document_id", document_id
+            ).execute()
+        except Exception:
+            pass
 
-        return {
-            "message": "FIR filed and digitally signed.",
-            "case_id": case_id,
-            "fir_id": fir_id,
-            "document_id": document_id,
-            "version_id": version_id,
-            "file_hash": file_hash,
-            "signature": signature,
-            "storage_path": storage_path,
-        }
-
-    except Exception as exc:
-        # Do not turn a useful Supabase error into "[object Object]".
         raise HTTPException(
-            500,
-            f"FIR creation failed. No final FIR was confirmed. Reason: {error_text(exc)}"
+            status_code=500,
+            detail="Could not create FIR document version."
         )
+
+    # ------------------------------------------------------------
+    # Point documents.current_version_id to the signed version.
+    # ------------------------------------------------------------
+
+    update_result = (
+        supabase.table("documents")
+        .update({
+            "current_version_id": version_id
+        })
+        .eq("document_id", document_id)
+        .execute()
+    )
+
+    if not update_result.data:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not set current FIR document version."
+        )
+
+    return {
+        "message": "FIR filed successfully.",
+        "case_id": case_id,
+        "fir_id": fir_id,
+        "document_id": document_id,
+        "version_id": version_id,
+        "filename": f"FIR_{fir_id}.pdf",
+        "file_hash": file_hash,
+        "hash_algorithm": "SHA-256",
+        "signature": signature,
+        "signature_algorithm": "RSA-PSS-SHA256",
+        "storage_path": storage_path,
+    }
+
 
 
 @app.get("/case/my")
@@ -1149,16 +1319,23 @@ def verify_document(
         actual_hash = hashlib.sha256(stored).hexdigest()
         hash_valid = secrets.compare_digest(actual_hash, v["file_hash"])
 
+        # Prefer the active key for the current system. For historical
+        # versions, a future signing_key_id column can identify the exact
+        # retired key; until that migration exists, use the uploader's
+        # available public keys and accept a matching signature.
         kr = (
-            supabase.table("user_keys").select("public_key")
-            .eq("user_id", v["uploader_id"]).eq("key_status", "active")
-            .limit(1).execute()
+            supabase.table("user_keys").select("public_key,algorithm,key_status")
+            .eq("user_id", v["uploader_id"])
+            .order("created_at", desc=True)
+            .execute()
         )
         if not kr.data:
             raise HTTPException(404, "Uploader public key not found.")
 
-        signature_valid = verify_signature(
-            kr.data[0]["public_key"], v["file_hash"], v["signature"]
+        signature_valid = any(
+            verify_signature(row["public_key"], v["file_hash"], v["signature"])
+            for row in kr.data
+            if row.get("public_key")
         )
 
         return {
@@ -1167,7 +1344,7 @@ def verify_document(
             "signature_valid": signature_valid,
             "stored_hash": v["file_hash"],
             "actual_hash": actual_hash,
-            "algorithm": "SHA-256 + ECDSA-P256",
+            "algorithm": "SHA-256 + RSA-PSS-SHA256",
             "version_id": version_id,
             "uploader_id": v["uploader_id"],
         }
@@ -1224,8 +1401,8 @@ async def upload_document(
     try:
         ft = "image" if ext in {".jpg", ".jpeg", ".png"} else "text"
         h = calculate_file_hash(data)
-        ensure_user_key(u["user_id"])
-        sig = sign_file_hash(u["user_id"], h)
+        ensure_user_key(u["user_id"], supabase)
+        sig = sign_file_hash(u["user_id"], h, supabase)
 
         dr = supabase.table("documents").insert({
             "case_id": case_id,
@@ -1433,3 +1610,4 @@ def case_invite(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
