@@ -1478,7 +1478,8 @@ def case_members(
             supabase.table("case_membership")
             .select(
                 "user_id,permission_level,allowed_document_types,granted_by,"
-                "delegated_by,users(employee_id,"
+                "delegated_by,"
+                "users:case_membership_user_id_fkey(employee_id,"
                 "employee_registry!fk_users_employee(full_name,departments(name)))"
             )
             .eq("case_id", case_id).execute()
