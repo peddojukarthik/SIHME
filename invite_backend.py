@@ -62,7 +62,7 @@ GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 
 # Email links must point to a real HTTP page.
 # For local development this is the backend's activate-page.
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+BASE_URL = os.getenv("BASE_URL", "https://alliance-cqnf.onrender.com")
 
 SESSION_LIFETIME_HOURS = 8
 ELEVATION_LIFETIME_MINUTES = 15

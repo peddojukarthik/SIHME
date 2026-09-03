@@ -2,6 +2,6 @@
 <style>body{font-family:system-ui;max-width:450px;margin:50px auto;padding:20px}.card{border:1px solid #ddd;border-radius:12px;padding:22px}input{width:100%;box-sizing:border-box;padding:10px;margin:7px 0;border:1px solid #ccc;border-radius:7px}button{width:100%;padding:11px;background:#2563eb;color:white;border:0;border-radius:7px}.success{color:#065f46}.error{color:#991b1b}</style>
 </head><body><div class=card><h1>Activate Account</h1><p>Create your password. After activation, log in and complete your profile.</p><input id=p type=password minlength=8 placeholder="New password"><input id=c type=password minlength=8 placeholder="Confirm password"><button onclick=go()>Activate</button><p id=m></p></div>
 <script>
-const API="http://localhost:8000",token=new URLSearchParams(location.search).get("token");
+const API="https://alliance-cqnf.onrender.com",token=new URLSearchParams(location.search).get("token");
 async function go(){if(!token)return m.textContent="Activation token missing.";if(p.value.length<8)return m.textContent="Password must be at least 8 characters.";if(p.value!==c.value)return m.textContent="Passwords do not match.";try{let r=await fetch(API+"/activate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token,password:p.value})}),d=await r.json();if(!r.ok)throw Error(typeof d.detail==="string"?d.detail:JSON.stringify(d));m.className="success";m.textContent="Account activated. You can now log in.";p.disabled=c.disabled=true}catch(e){m.className="error";m.textContent=e.message}}
 </script></body></html>
