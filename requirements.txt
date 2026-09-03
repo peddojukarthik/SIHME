@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 supabase
 python-dotenv
 bcrypt
@@ -7,3 +7,4 @@ pyotp
 cryptography
 reportlab
 python-multipart
+requests
