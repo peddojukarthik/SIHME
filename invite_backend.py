@@ -15,33 +15,10 @@ This version keeps the existing session/TOTP/key/document model, but fixes:
 - no separate invite page is required
 """
 
-import os, secrets, hashlib, smtplib, mimetypes, uuid, socket
-from contextlib import contextmanager
-
-@contextmanager
-def force_ipv4_dns():
-    """
-    Render (and several other free-tier hosts) advertise IPv6 but have
-    no working outbound IPv6 route. smtplib tries Gmail's IPv6 address
-    first and fails with ENETUNREACH ('Network is unreachable') before
-    ever attempting IPv4. This filters DNS results to IPv4-only for the
-    duration of the SMTP call, then restores normal resolution after.
-    """
-    original_getaddrinfo = socket.getaddrinfo
-
-    def ipv4_only_getaddrinfo(*args, **kwargs):
-        results = original_getaddrinfo(*args, **kwargs)
-        ipv4_results = [r for r in results if r[0] == socket.AF_INET]
-        return ipv4_results or results
-
-    socket.getaddrinfo = ipv4_only_getaddrinfo
-    try:
-        yield
-    finally:
-        socket.getaddrinfo = original_getaddrinfo
+import os, secrets, hashlib, mimetypes, uuid
+import resend
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from email.mime.text import MIMEText
 
 import bcrypt
 import pyotp
@@ -80,8 +57,11 @@ supabase = create_client(
     os.environ["SUPABASE_SERVICE_ROLE_KEY"],
 )
 
-GMAIL_ADDRESS = os.environ["GMAIL_ADDRESS"]
-GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
+RESEND_API_KEY = os.environ["RESEND_API_KEY"]
+resend.api_key = RESEND_API_KEY
+# Must be an address on a domain you've verified in Resend, or their
+# shared sandbox sender for testing (see step-by-step notes below).
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "onboarding@resend.dev")
 
 # Email links must point to a real HTTP page.
 # For local development this is the backend's activate-page.
@@ -447,20 +427,20 @@ class EmailOTPVerifyRequest(BaseModel):
 
 
 def send_otp_email(to_email, name, code):
-    msg = MIMEText(
-        f"Hello {name},\n\n"
-        f"Your Secure DMS verification code is: {code}\n"
-        f"It expires in {EMAIL_OTP_MINUTES} minutes.\n\n"
-        "If you did not request this code, ignore this email."
-    )
-    msg["Subject"] = "Secure DMS verification code"
-    msg["From"] = GMAIL_ADDRESS
-    msg["To"] = to_email
-
-    with force_ipv4_dns():
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
+    try:
+        resend.Emails.send({
+            "from": EMAIL_FROM,
+            "to": [to_email],
+            "subject": "Secure DMS verification code",
+            "text": (
+                f"Hello {name},\n\n"
+                f"Your Secure DMS verification code is: {code}\n"
+                f"It expires in {EMAIL_OTP_MINUTES} minutes.\n\n"
+                "If you did not request this code, ignore this email."
+            ),
+        })
+    except Exception as e:
+        raise RuntimeError(f"Could not send OTP email: {e}")
 
 
 @app.post("/security/request-otp")
@@ -713,14 +693,15 @@ def send_email(to_email: str, full_name: str, activation_link: str):
         f"{activation_link}\n\n"
         "After activation, log in and complete your profile."
     )
-    msg = MIMEText(body)
-    msg["Subject"] = "Activate your Secure DMS account"
-    msg["From"] = GMAIL_ADDRESS
-    msg["To"] = to_email
-    with force_ipv4_dns():
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
+    try:
+        resend.Emails.send({
+            "from": EMAIL_FROM,
+            "to": [to_email],
+            "subject": "Activate your Secure DMS account",
+            "text": body,
+        })
+    except Exception as e:
+        raise RuntimeError(f"Could not send activation email: {e}")
 
 
 # --------------------------- ACTIVATION / PROFILE ---------------------------
