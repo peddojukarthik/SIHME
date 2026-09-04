@@ -8,3 +8,4 @@ cryptography
 reportlab
 python-multipart
 requests
+resend
