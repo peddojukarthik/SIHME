@@ -15,7 +15,30 @@ This version keeps the existing session/TOTP/key/document model, but fixes:
 - no separate invite page is required
 """
 
-import os, secrets, hashlib, smtplib, mimetypes, uuid
+import os, secrets, hashlib, smtplib, mimetypes, uuid, socket
+from contextlib import contextmanager
+
+@contextmanager
+def force_ipv4_dns():
+    """
+    Render (and several other free-tier hosts) advertise IPv6 but have
+    no working outbound IPv6 route. smtplib tries Gmail's IPv6 address
+    first and fails with ENETUNREACH ('Network is unreachable') before
+    ever attempting IPv4. This filters DNS results to IPv4-only for the
+    duration of the SMTP call, then restores normal resolution after.
+    """
+    original_getaddrinfo = socket.getaddrinfo
+
+    def ipv4_only_getaddrinfo(*args, **kwargs):
+        results = original_getaddrinfo(*args, **kwargs)
+        ipv4_results = [r for r in results if r[0] == socket.AF_INET]
+        return ipv4_results or results
+
+    socket.getaddrinfo = ipv4_only_getaddrinfo
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = original_getaddrinfo
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
@@ -434,9 +457,10 @@ def send_otp_email(to_email, name, code):
     msg["From"] = GMAIL_ADDRESS
     msg["To"] = to_email
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
+    with force_ipv4_dns():
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
 
 
 @app.post("/security/request-otp")
@@ -693,9 +717,10 @@ def send_email(to_email: str, full_name: str, activation_link: str):
     msg["Subject"] = "Activate your Secure DMS account"
     msg["From"] = GMAIL_ADDRESS
     msg["To"] = to_email
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
+    with force_ipv4_dns():
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
 
 
 # --------------------------- ACTIVATION / PROFILE ---------------------------
@@ -1611,4 +1636,3 @@ def case_invite(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
